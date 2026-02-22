@@ -5,3 +5,6 @@ node_modules/
 data/
 messages.log
 *.log
+*.zip
+.DS_Store
+whatsappchatzipfile/
