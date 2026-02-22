@@ -511,7 +511,7 @@ async function buildDocumentFromUpload(contactId, contactName, messages, relatio
  * Build the full relationship document from scratch.
  * Two-pass approach: first pass extracts patterns, second pass catches everything missed.
  */
-async function buildDocument(contactId, contactName, onProgress, relationshipContext) {
+async function buildDocument(contactId, contactName, onProgress, relationshipContext, profileQA) {
   const userName = config.get('userName') || 'Avin';
 
   // Get ALL messages for this contact (both sides, in order)
@@ -595,6 +595,17 @@ async function buildDocument(contactId, contactName, onProgress, relationshipCon
     finalDocument += `\n\n## Relationship Context (provided by ${userName})\n${relationshipContext}`;
   }
 
+  // Append Profile Q&A section if provided
+  if (profileQA && profileQA.length > 0) {
+    const qaEntries = profileQA
+      .filter(qa => qa.answer && qa.answer.trim())
+      .map(qa => `**Q:** ${qa.question}\n**A:** ${qa.answer}`)
+      .join('\n\n');
+    if (qaEntries) {
+      finalDocument += `\n\n## Profile Q&A (provided by user)\n${qaEntries}`;
+    }
+  }
+
   finalDocument += `\n\n## Topic & Content Analysis\n${topicAnalysis}`;
 
   // Save
@@ -607,6 +618,8 @@ async function buildDocument(contactId, contactName, onProgress, relationshipCon
     messagesSinceLastUpdate: 0,
     hasTopicAnalysis: true,
     hasRelationshipContext: !!relationshipContext,
+    profileQA: profileQA || null,
+    hasProfileQA: !!(profileQA && profileQA.length > 0 && profileQA.some(qa => qa.answer && qa.answer.trim())),
   };
 
   saveDocument(contactId, finalDocument, meta);
@@ -703,6 +716,92 @@ function needsUpdate(contactId) {
   return (meta.messagesSinceLastUpdate || 0) >= UPDATE_THRESHOLD;
 }
 
+/**
+ * Generate smart, context-aware profile questions by analyzing recent chat messages.
+ * Returns 3-5 questions specific to this conversation for the user to answer
+ * before building a profile.
+ */
+async function generateProfileQuestions(contactId, contactName) {
+  const userName = config.get('userName') || 'Avin';
+
+  // Fetch up to 200 recent messages
+  const messages = await vectordb.getMessagesByContact(contactId, undefined, 200);
+  const messageCount = messages.length;
+
+  if (messageCount < 5) {
+    // Too few messages — return generic questions
+    return {
+      questions: [
+        { id: 'relationship', text: `What is your relationship with ${contactName}? (e.g. close friend, college buddy, coworker, sibling)` },
+        { id: 'language', text: `What language(s) do you primarily use when texting ${contactName}?` },
+        { id: 'vibe', text: `How would you describe the vibe/energy of your conversations with ${contactName}?` },
+      ],
+      messageCount,
+    };
+  }
+
+  const convo = formatConversation(messages, userName, contactName);
+
+  const prompt = `You are analyzing a WhatsApp conversation between "${userName}" and "${contactName}" (${messageCount} messages).
+
+CONVERSATION:
+${convo.slice(0, 6000)}
+
+---
+
+Based on what you see in this conversation, generate 3-5 smart questions to ask "${userName}" about their relationship with "${contactName}". The answers will be used to build a better AI texting profile.
+
+RULES:
+- ALWAYS include these two questions:
+  1. What is your relationship with ${contactName}? (friend, partner, sibling, coworker, etc.)
+  2. What language(s) do you primarily use when texting ${contactName}?
+- Then add 1-3 CONTEXT-SPECIFIC questions based on what you observe in the conversation. Examples:
+  - If you see inside jokes, ask about them
+  - If you see references to specific people/places/events, ask about them
+  - If you see recurring topics, ask about them
+  - If you see a distinct mood pattern, ask about it
+  - If you see media/memes being shared, ask what kind
+- Make questions specific to THIS conversation, not generic
+- Keep questions concise and easy to answer
+- Each question should help the AI understand context that isn't obvious from the messages alone
+
+OUTPUT FORMAT (strict JSON array):
+[
+  {"id": "relationship", "text": "question text here"},
+  {"id": "language", "text": "question text here"},
+  {"id": "topic1", "text": "question text here"}
+]`;
+
+  try {
+    const result = await callLLM(
+      'You generate smart profile-building questions based on conversation analysis. Output strict JSON only.',
+      [{ role: 'user', content: prompt }],
+      500
+    );
+
+    // Parse the JSON from the response
+    const jsonMatch = result.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const questions = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(questions) && questions.length >= 2) {
+        return { questions, messageCount };
+      }
+    }
+  } catch (err) {
+    console.error(`[StyleProfiler] Failed to generate smart questions: ${err.message}`);
+  }
+
+  // Fallback: generic questions
+  return {
+    questions: [
+      { id: 'relationship', text: `What is your relationship with ${contactName}? (e.g. close friend, college buddy, coworker, sibling)` },
+      { id: 'language', text: `What language(s) do you primarily use when texting ${contactName}?` },
+      { id: 'vibe', text: `How would you describe the vibe/energy of your conversations with ${contactName}?` },
+    ],
+    messageCount,
+  };
+}
+
 module.exports = {
   buildDocument,
   buildDocumentFromUpload,
@@ -713,5 +812,6 @@ module.exports = {
   trackNewMessage,
   needsUpdate,
   analyzeTopics,
+  generateProfileQuestions,
   UPDATE_THRESHOLD,
 };

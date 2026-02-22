@@ -21,11 +21,17 @@ server.listen(WEB_PORT, () => {
   console.log(`Dashboard: http://localhost:${WEB_PORT}`);
 });
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  prompt: '> ',
-});
+let rl;
+try {
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: '> ',
+  });
+} catch {
+  // Running without TTY (background mode)
+  rl = { prompt: () => {}, on: () => {}, close: () => {} };
+}
 
 // --- Startup ---
 client.on('ready', async () => {
@@ -54,7 +60,7 @@ client.on('ready', async () => {
   }
 
   console.log('\nType /help for commands.\n');
-  rl.prompt();
+  try { rl.prompt(); } catch {}
 });
 
 // --- Incoming Messages ---
@@ -77,11 +83,13 @@ client.on('message', async (msg) => {
 
   // Process through auto-reply system (stores + optionally replies)
   const result = await autoReply.handleIncomingMessage(msg, client);
-  if (result.replied) {
+  if (result.replied === 'pending') {
+    // Reply will be sent after debounce — auto-reply.js logs the actual reply
+  } else if (result.replied && result.reply) {
     console.log(`  [Auto-replied] ${result.reply}`);
   }
 
-  rl.prompt(true);
+  try { rl.prompt(true); } catch {}
 });
 
 // --- Outgoing Messages (sent from phone) ---
@@ -104,7 +112,7 @@ rl.on('line', async (line) => {
     console.log(`Error: ${err.message}`);
   }
 
-  rl.prompt();
+  try { rl.prompt(); } catch {}
 });
 
 // --- Start ---

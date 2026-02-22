@@ -3,6 +3,7 @@ const vectordb = require('../data/vectordb');
 const agent = require('./agent');
 const chain = require('./chain');
 const styleProfiler = require('./style-profiler');
+const { getIO } = require('../web/server');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -19,6 +20,13 @@ function randomDelay(minMs, maxMs) {
  */
 const pendingReplies = new Map();
 const DEBOUNCE_MS = 4000; // wait 4 seconds after last message before replying
+
+/**
+ * Cache of recent image descriptions per contact, so follow-up text messages
+ * like "what's in the photo?" can reference the image even in a new debounce window.
+ */
+const recentImageDescriptions = new Map();
+const IMAGE_DESC_TTL = 120000; // 2 minutes — long enough for follow-up questions
 
 /**
  * Get smart reply delay based on timing stats from the style profile.
@@ -182,11 +190,46 @@ async function sendDebouncedReply(contactId, entry) {
     ? messages[0]
     : messages.join('\n');
 
+  // Emergency detection — notify user immediately
+  const isEmergency = chain.detectEmergency(combinedMessage);
+  if (isEmergency) {
+    console.log(`\n  \x1b[31m\x1b[1m⚠️  EMERGENCY from ${contactName} (${contactId}): "${combinedMessage.slice(0, 100)}"\x1b[0m`);
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit('emergency', {
+          contactId,
+          contactName,
+          message: combinedMessage.slice(0, 300),
+          timestamp: Math.floor(Date.now() / 1000),
+        });
+      }
+    } catch {}
+  }
+
   // Check for images and describe them
   let imageDescriptions = [];
   const imageMessages = rawMessages.filter(m => m.type === 'image' || m.type === 'sticker');
   if (imageMessages.length > 0) {
+    console.log(`  [Auto-reply] Describing ${imageMessages.length} image(s)...`);
     imageDescriptions = await getImageDescriptions(rawMessages, chat);
+    if (imageDescriptions.length > 0) {
+      console.log(`  [Auto-reply] Image descriptions: ${imageDescriptions.map(d => d.slice(0, 80)).join(' | ')}`);
+      // Persist descriptions so follow-up text messages can reference them
+      recentImageDescriptions.set(contactId, {
+        descriptions: imageDescriptions,
+        timestamp: Date.now(),
+      });
+    } else {
+      console.log(`  [Auto-reply] Image description returned empty`);
+    }
+  } else {
+    // No images in this batch — check if there are recent image descriptions to carry forward
+    const cached = recentImageDescriptions.get(contactId);
+    if (cached && (Date.now() - cached.timestamp) < IMAGE_DESC_TTL) {
+      imageDescriptions = cached.descriptions;
+      console.log(`  [Auto-reply] Using cached image description from ${Math.round((Date.now() - cached.timestamp) / 1000)}s ago`);
+    }
   }
 
   // Use chain-of-thought reply
@@ -196,6 +239,12 @@ async function sendDebouncedReply(contactId, entry) {
   } catch (err) {
     console.error(`  [Chain] Failed, falling back to basic reply: ${err.message}`);
     reply = await agent.generateReply(contactId, contactName, combinedMessage);
+  }
+
+  // If chain returned null, verifier rejected ALL attempts — do NOT send
+  if (!reply) {
+    console.log(`  [Auto-reply] Chain returned null for ${contactName} — skipping reply (verifier rejected all attempts)`);
+    return null;
   }
 
   // Smart timing delay

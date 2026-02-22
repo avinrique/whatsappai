@@ -63,7 +63,8 @@ const api = {
   // Profiles
   getProfiles: () => api.get('/api/profiles'),
   getProfile: (contactId) => api.get(`/api/profiles/${encodeURIComponent(contactId)}`),
-  buildProfile: (contactId, contactName, relationshipContext) => api.post(`/api/profiles/${encodeURIComponent(contactId)}/build`, { contactName, relationshipContext }),
+  generateProfileQuestions: (contactId, contactName) => api.post(`/api/profiles/${encodeURIComponent(contactId)}/questions`, { contactName }),
+  buildProfile: (contactId, contactName, relationshipContext, profileQA) => api.post(`/api/profiles/${encodeURIComponent(contactId)}/build`, { contactName, relationshipContext, profileQA }),
   deleteProfile: (contactId) => api.del(`/api/profiles/${encodeURIComponent(contactId)}`),
 
   // Scheduler

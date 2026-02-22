@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const config = require('../config/config');
+const vectordb = require('../data/vectordb');
 
 // Multer config for file uploads
 const UPLOAD_DIR = path.join(config.DATA_DIR, 'uploads');
@@ -37,21 +38,41 @@ function createWebServer(whatsappClient) {
     res.json({ state });
   });
 
-  // Wire WhatsApp events to socket.io
+  // Wire WhatsApp events to socket.io + persist to vectordb
   whatsappClient.on('message', async (msg) => {
     try {
       const contact = await msg.getContact();
       const chat = await msg.getChat();
+      const contactName = contact.pushname || contact.name || msg.from;
+
       io.emit('message:incoming', {
         id: msg.id._serialized,
         from: msg.from,
-        contactName: contact.pushname || contact.name || msg.from,
-        chatName: chat.name || contact.pushname || msg.from,
+        contactName,
+        chatName: chat.name || contactName,
         body: msg.body || '',
         type: msg.type,
         timestamp: msg.timestamp,
         isGroup: chat.isGroup,
       });
+
+      // Store in vectordb so messages persist across sessions (skip if already stored by auto-reply)
+      if (msg.body) {
+        const msgId = msg.id._serialized || `${msg.from}_${msg.timestamp}`;
+        const exists = await vectordb.messageExists(msgId).catch(() => false);
+        if (!exists) {
+          vectordb.storeMessage({
+            id: msgId,
+            body: msg.body,
+            contactId: msg.from,
+            contactName,
+            fromMe: false,
+            timestamp: msg.timestamp,
+            type: msg.type,
+            chatIsGroup: chat.isGroup,
+          }).catch(() => {}); // best-effort
+        }
+      }
     } catch (err) {
       // Silently ignore socket errors for messages
     }
@@ -61,14 +82,34 @@ function createWebServer(whatsappClient) {
     if (!msg.fromMe) return;
     try {
       const chat = await msg.getChat();
+      const chatName = chat.name || msg.to;
+
       io.emit('message:outgoing', {
         id: msg.id._serialized,
         to: msg.to,
-        chatName: chat.name || msg.to,
+        chatName,
         body: msg.body || '',
         type: msg.type,
         timestamp: msg.timestamp,
       });
+
+      // Store outgoing messages in vectordb (skip if already stored by send route or auto-reply)
+      if (msg.body) {
+        const msgId = msg.id._serialized || `${msg.to}_${msg.timestamp}`;
+        const exists = await vectordb.messageExists(msgId).catch(() => false);
+        if (!exists) {
+          vectordb.storeMessage({
+            id: msgId,
+            body: msg.body,
+            contactId: msg.to,
+            contactName: chatName,
+            fromMe: true,
+            timestamp: msg.timestamp,
+            type: msg.type,
+            chatIsGroup: chat.isGroup,
+          }).catch(() => {}); // best-effort
+        }
+      }
     } catch (err) {
       // Silently ignore
     }

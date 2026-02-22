@@ -125,6 +125,7 @@ const ProfilesPage = {
       if (p.hasTimingStats) badges.push('<span class="badge badge-green">Timing</span>');
       if (p.hasImageContext) badges.push('<span class="badge badge-green">Images</span>');
       if (p.hasRelationshipContext) badges.push('<span class="badge badge-green">Relationship</span>');
+      if (p.hasProfileQA) badges.push('<span class="badge badge-green">Q&A</span>');
       if (p.source === 'upload') badges.push('<span class="badge badge-yellow">Uploaded</span>');
 
       return `
@@ -183,18 +184,85 @@ const ProfilesPage = {
 
     const btn = document.getElementById('btn-build-profile');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Building...';
-    document.getElementById('profile-build-progress').style.display = 'block';
-
-    const relationshipContext = (document.getElementById('profile-relationship-context')?.value || '').trim();
+    btn.innerHTML = '<span class="spinner"></span> Generating questions...';
 
     try {
-      await api.buildProfile(this.selectedContactId, this.selectedContactName, relationshipContext || undefined);
+      const { questions, messageCount } = await api.generateProfileQuestions(this.selectedContactId, this.selectedContactName);
+      this.showQuestionsForm(questions, messageCount);
     } catch (err) {
-      App.toast('Build failed: ' + err.message);
+      App.toast('Failed to generate questions: ' + err.message);
       btn.disabled = false;
       btn.textContent = 'Build Profile';
     }
+  },
+
+  showQuestionsForm(questions, messageCount) {
+    this._pendingQuestions = questions;
+
+    const container = document.getElementById('profile-build-progress');
+    container.style.display = 'block';
+
+    container.innerHTML = `
+      <div class="card" style="margin-top: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color);">
+        <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">
+          Answer a few questions to build a better profile
+          <span style="font-size: 11px; color: var(--text-muted); font-weight: 400;">(${messageCount} messages analyzed)</span>
+        </div>
+        ${questions.map((q, i) => `
+          <div style="margin-bottom: 12px;">
+            <label style="font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 4px;">${i + 1}. ${this.escapeHtml(q.text)}</label>
+            <textarea class="qa-answer" data-id="${q.id}" data-question="${this.escapeHtml(q.text)}" rows="2" style="width: 100%; resize: vertical; font-size: 13px;" placeholder="Your answer..."></textarea>
+          </div>
+        `).join('')}
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <button class="btn btn-primary" id="btn-build-with-qa">Build with Answers</button>
+          <button class="btn btn-outline" id="btn-build-skip-qa">Skip &mdash; build without</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-build-with-qa').addEventListener('click', () => this.submitQAAndBuild(true));
+    document.getElementById('btn-build-skip-qa').addEventListener('click', () => this.submitQAAndBuild(false));
+
+    // Re-enable the build button
+    const btn = document.getElementById('btn-build-profile');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Build Profile';
+    }
+  },
+
+  submitQAAndBuild(includeAnswers) {
+    const relationshipContext = (document.getElementById('profile-relationship-context')?.value || '').trim();
+    let profileQA = null;
+
+    if (includeAnswers) {
+      const textareas = document.querySelectorAll('.qa-answer');
+      profileQA = Array.from(textareas).map(ta => ({
+        id: ta.dataset.id,
+        question: ta.dataset.question,
+        answer: ta.value.trim(),
+      }));
+    }
+
+    // Show building state
+    const container = document.getElementById('profile-build-progress');
+    container.innerHTML = `<div class="progress-text"><span class="spinner"></span> Building profile${includeAnswers ? ' with your answers' : ''}...</div>`;
+
+    const btn = document.getElementById('btn-build-profile');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Building...';
+    }
+
+    api.buildProfile(this.selectedContactId, this.selectedContactName, relationshipContext || undefined, profileQA || undefined)
+      .catch(err => {
+        App.toast('Build failed: ' + err.message);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Build Profile';
+        }
+      });
   },
 
   async rebuildProfile(contactId, contactName) {

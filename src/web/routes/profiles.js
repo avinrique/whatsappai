@@ -55,10 +55,24 @@ module.exports = function () {
     res.json({ success: deleted });
   });
 
+  // Generate smart profile questions
+  router.post('/:contactId/questions', async (req, res) => {
+    try {
+      const { contactName } = req.body;
+      if (!contactName) {
+        return res.status(400).json({ error: 'contactName required' });
+      }
+      const result = await styleProfiler.generateProfileQuestions(req.params.contactId, contactName);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Build/rebuild a profile
   router.post('/:contactId/build', async (req, res) => {
     try {
-      const { contactName, relationshipContext } = req.body;
+      const { contactName, relationshipContext, profileQA } = req.body;
       if (!contactName) {
         return res.status(400).json({ error: 'contactName required' });
       }
@@ -78,7 +92,8 @@ module.exports = function () {
             ...update,
           });
         },
-        relationshipContext || null
+        relationshipContext || null,
+        profileQA || null
       );
 
       if (io) io.emit('profile:done', {
