@@ -8,19 +8,32 @@ const { callLLM } = require('./llm');
 let pendingClarification = null;
 const PENDING_TTL = 60000; // 1 minute to reply
 
+// Track when Alex sends messages to self-chat, so we don't intercept our own messages
+let lastAlexSendTime = 0;
+const SEND_IGNORE_WINDOW = 3000; // ignore self-chat messages within 3s of Alex sending
+
 function isSelfChat(msg) {
   return msg.fromMe && msg.from === msg.to && msg.body && msg.body.trim();
 }
 
 /**
- * Check if a message is an Alex command:
- * - fromMe (sent by the user)
- * - self-chat (msg.from === msg.to)
- * - body ends with trigger word (case-insensitive)
- * - body has more than just the trigger word
+ * Send a message to self-chat and mark it as Alex's own message.
  */
+async function sendToSelf(client, chatId, text) {
+  lastAlexSendTime = Date.now();
+  await client.sendMessage(chatId, text);
+}
+
+/**
+ * Check if this message was sent by Alex itself (not the user).
+ */
+function isAlexOwnMessage() {
+  return (Date.now() - lastAlexSendTime) < SEND_IGNORE_WINDOW;
+}
+
 function isAlexCommand(msg) {
   if (!isSelfChat(msg)) return false;
+  if (isAlexOwnMessage()) return false;
 
   const trigger = (config.get('triggerWord') || 'alex').toLowerCase();
   const body = msg.body.trim().toLowerCase();
@@ -40,6 +53,7 @@ function isAlexCommand(msg) {
  */
 function hasPendingClarification(msg) {
   if (!isSelfChat(msg)) return false;
+  if (isAlexOwnMessage()) return false;
   if (!pendingClarification) return false;
   // Expire after TTL
   if (Date.now() - pendingClarification.timestamp > PENDING_TTL) {
@@ -289,12 +303,20 @@ async function executeSendMessage(parsed, client) {
 
   const { matchedContactId, matchedContactName, intent } = parsed;
 
+  if (!intent) {
+    return { success: false, message: `Could not understand what to say to ${matchedContactName}.` };
+  }
+
   // Generate the message in the user's style for this contact
   const messageBody = await agent.generateFromInstruction(
     matchedContactId,
     matchedContactName,
     intent
   );
+
+  if (!messageBody) {
+    return { success: false, message: `LLM returned empty message for ${matchedContactName}. Try again.` };
+  }
 
   // Send it
   await client.sendMessage(matchedContactId, messageBody);
@@ -422,7 +444,7 @@ async function handleAlexCommand(msg, client) {
       };
 
       const prompt = `Multiple contacts match "${parsed.contactQuery}":\n${list}\n\nReply with the number or full name.`;
-      await client.sendMessage(msg.from, prompt);
+      await sendToSelf(client, msg.from, prompt);
       console.log(`[Alex] Waiting for clarification (${parsed.multipleMatches.length} matches)`);
       return;
     }
@@ -433,12 +455,12 @@ async function handleAlexCommand(msg, client) {
     // Send confirmation to self-chat
     const icon = result.success ? '\u2713' : '\u2717';
     const confirmation = `${icon} ${result.message}`;
-    await client.sendMessage(msg.from, confirmation);
+    await sendToSelf(client, msg.from, confirmation);
     console.log(`[Alex] ${confirmation}`);
   } catch (err) {
     console.error(`[Alex] Error: ${err.message}`);
     try {
-      await client.sendMessage(msg.from, `\u2717 Alex error: ${err.message}`);
+      await sendToSelf(client, msg.from, `\u2717 Alex error: ${err.message}`);
     } catch {}
   }
 }
@@ -475,7 +497,7 @@ async function handleClarification(msg, client) {
 
   if (!picked) {
     try {
-      await client.sendMessage(msg.from, `\u2717 Could not match "${reply}" to any of the options. Try again with the command.`);
+      await sendToSelf(client, msg.from, `\u2717 Could not match "${reply}" to any of the options. Try again with the command.`);
     } catch {}
     return;
   }
@@ -491,12 +513,12 @@ async function handleClarification(msg, client) {
     const result = await executeCommand(parsed, client);
     const icon = result.success ? '\u2713' : '\u2717';
     const confirmation = `${icon} ${result.message}`;
-    await client.sendMessage(msg.from, confirmation);
+    await sendToSelf(client, msg.from, confirmation);
     console.log(`[Alex] ${confirmation}`);
   } catch (err) {
     console.error(`[Alex] Error: ${err.message}`);
     try {
-      await client.sendMessage(msg.from, `\u2717 Alex error: ${err.message}`);
+      await sendToSelf(client, msg.from, `\u2717 Alex error: ${err.message}`);
     } catch {}
   }
 }

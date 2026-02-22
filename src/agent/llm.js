@@ -92,10 +92,14 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
 
   const data = await response.json();
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  const outputLen = data.message?.content?.length || 0;
-  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${outputLen} chars out\x1b[0m`);
+  const content = data.message?.content || '';
+  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${content.length} chars out\x1b[0m`);
 
-  return data.message.content;
+  if (!content) {
+    throw new Error(`Ollama returned empty response (model: ${model})`);
+  }
+
+  return content;
 }
 
 async function callLLM(systemPrompt, messages, maxTokens = 300) {
