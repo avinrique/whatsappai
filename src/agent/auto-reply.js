@@ -61,7 +61,8 @@ function getSmartDelay(contactId) {
 
 /**
  * Download and describe images from a message.
- * For < 10 images, read all. For >= 10, read ~5 random ones.
+ * Returns { descriptions: string[], base64Images: string[] }
+ * base64 is kept so follow-up questions can re-analyze the image.
  */
 async function getImageDescriptions(messages, chat) {
   const imageMessages = [];
@@ -72,12 +73,11 @@ async function getImageDescriptions(messages, chat) {
     }
   }
 
-  if (imageMessages.length === 0) return [];
+  if (imageMessages.length === 0) return { descriptions: [], base64Images: [] };
 
   // Select which images to process
   let toProcess = imageMessages;
   if (imageMessages.length >= 10) {
-    // Random sample of ~5
     const shuffled = [...imageMessages].sort(() => Math.random() - 0.5);
     toProcess = shuffled.slice(0, 5);
   }
@@ -94,13 +94,14 @@ async function getImageDescriptions(messages, chat) {
     }
   }
 
-  if (base64Images.length === 0) return [];
+  if (base64Images.length === 0) return { descriptions: [], base64Images: [] };
 
   try {
-    return await chain.describeImages(base64Images);
+    const descriptions = await chain.describeImages(base64Images);
+    return { descriptions, base64Images };
   } catch (err) {
     console.error(`  [Auto-reply] Image description failed: ${err.message}`);
-    return [];
+    return { descriptions: [], base64Images };
   }
 }
 
@@ -209,33 +210,38 @@ async function sendDebouncedReply(contactId, entry) {
 
   // Check for images and describe them
   let imageDescriptions = [];
+  let base64Images = [];
   const imageMessages = rawMessages.filter(m => m.type === 'image' || m.type === 'sticker');
   if (imageMessages.length > 0) {
     console.log(`  [Auto-reply] Describing ${imageMessages.length} image(s)...`);
-    imageDescriptions = await getImageDescriptions(rawMessages, chat);
+    const imgResult = await getImageDescriptions(rawMessages, chat);
+    imageDescriptions = imgResult.descriptions;
+    base64Images = imgResult.base64Images;
     if (imageDescriptions.length > 0) {
       console.log(`  [Auto-reply] Image descriptions: ${imageDescriptions.map(d => d.slice(0, 80)).join(' | ')}`);
-      // Persist descriptions so follow-up text messages can reference them
+      // Persist descriptions AND base64 so follow-up questions can re-analyze
       recentImageDescriptions.set(contactId, {
         descriptions: imageDescriptions,
+        base64Images,
         timestamp: Date.now(),
       });
     } else {
       console.log(`  [Auto-reply] Image description returned empty`);
     }
   } else {
-    // No images in this batch — check if there are recent image descriptions to carry forward
+    // No images in this batch — check if there are recent image data to carry forward
     const cached = recentImageDescriptions.get(contactId);
     if (cached && (Date.now() - cached.timestamp) < IMAGE_DESC_TTL) {
       imageDescriptions = cached.descriptions;
-      console.log(`  [Auto-reply] Using cached image description from ${Math.round((Date.now() - cached.timestamp) / 1000)}s ago`);
+      base64Images = cached.base64Images || [];
+      console.log(`  [Auto-reply] Using cached image data from ${Math.round((Date.now() - cached.timestamp) / 1000)}s ago`);
     }
   }
 
   // Use chain-of-thought reply
   let reply;
   try {
-    reply = await chain.thinkAndReply(contactId, contactName, combinedMessage, imageDescriptions);
+    reply = await chain.thinkAndReply(contactId, contactName, combinedMessage, imageDescriptions, base64Images);
   } catch (err) {
     console.error(`  [Chain] Failed, falling back to basic reply: ${err.message}`);
     reply = await agent.generateReply(contactId, contactName, combinedMessage);

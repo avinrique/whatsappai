@@ -73,10 +73,10 @@ Analyze ONLY how "${userName}" texts in this chunk. Focus on:
 5. Any notable conversation dynamics (who initiates, response speed patterns, topic changes)
 
 LANGUAGE & WORD CHOICE (CRITICAL — pay very close attention):
-6. What language(s) does ${userName} use? (English, Nepali, Hindi, Romanized Nepali/Hindi, mix, etc.)
-7. EXACT pronouns and address forms ${userName} uses for ${contactName} — e.g. "timi" vs "ta" vs "tapai", "tero" vs "timro" vs "tapako". List every instance you find with the exact message.
-8. EXACT verb conjugations ${userName} uses — e.g. "xau" vs "xas" vs "hunuhunxa", "garxau" vs "garxas", "aau" vs "aa". Copy the exact verb forms used.
-9. Specific spelling choices and transliteration habits — e.g. does ${userName} write "cha" or "xa" or "chha"? "hai" or "ha"? "kasto" or "ksto"? "garo" or "garyo"?
+6. What language(s) does ${userName} use? Identify the primary language, any code-switching, and whether it's in native script or romanized.
+7. EXACT pronouns and address forms ${userName} uses for ${contactName}. List every instance you find with the exact message. Note formality levels.
+8. EXACT verb forms, conjugations, and grammar patterns ${userName} uses. Copy the exact forms used — do not standardize or correct them.
+9. Specific spelling choices, transliteration habits, and slang. How does ${userName} spell words? Note every distinct non-standard spelling. These are fingerprints of the user's texting style.
 10. Recurring phrases, greetings, sign-offs, filler words that ${userName} always uses. Copy them exactly.
 
 For points 6-10, list EVERY example you find. These exact word choices are the most important part of the analysis. The AI must replicate these EXACTLY.
@@ -109,13 +109,13 @@ Now create ONE comprehensive relationship document. Use this EXACT format:
 This section is CRITICAL. The AI must use these EXACT words, not synonyms or alternatives.
 
 ### Pronouns & Address Forms
-(What pronoun does ${userName} use for ${contactName}? "timi"/"ta"/"tapai"? "timro"/"tero"/"tapako"? List the EXACT forms used with 5+ example messages. NEVER substitute one form for another.)
+(What pronoun/address forms does ${userName} use for ${contactName}? List EXACT forms used with 5+ example messages. Note formality level. NEVER substitute one form for another.)
 
-### Verb Conjugations
-(What verb endings does ${userName} use? e.g. "xau"/"xas"/"hunuhunxa", "garxau"/"garxas", "aau"/"aa"/"aaunus". These MUST match the pronoun form. List 5+ examples.)
+### Verb Forms & Grammar
+(What verb forms, conjugations, and grammar patterns does ${userName} use? List 5+ examples with exact wording. These MUST match the pronoun forms.)
 
 ### Spelling & Transliteration
-(How does ${userName} spell specific words? e.g. "xa" vs "cha", "xau" vs "chau", "k" vs "ke", "ksto" vs "kasto". List every distinct spelling choice found.)
+(How does ${userName} spell specific words? List every distinct non-standard spelling, romanization choice, or abbreviation found. These are unique fingerprints.)
 
 ### Recurring Phrases & Fillers
 (Phrases ${userName} uses repeatedly — greetings, sign-offs, reactions, filler words. 5+ exact examples.)
@@ -152,7 +152,7 @@ This section is CRITICAL. The AI must use these EXACT words, not synonyms or alt
 
 IMPORTANT RULES:
 - Every section MUST have real example messages copied EXACTLY from the analyses — word for word, character for character.
-- The Language & Word Choices section is the HIGHEST PRIORITY. If ${userName} uses "timi" never output "ta". If they write "xau" never output "xas". These are NOT interchangeable.
+- The Language & Word Choices section is the HIGHEST PRIORITY. Every specific word form, spelling, and pronoun ${userName} uses must be preserved exactly. Different forms are NOT interchangeable.
 - Include MORE examples rather than fewer. 5-8 per section minimum.
 - If a section has no data, write "No clear pattern found" and skip it.
 - Do NOT make up examples. Only use what appears in the analyses.`;
@@ -226,7 +226,7 @@ Create the FINAL, DEFINITIVE relationship document. This must be EXTREMELY detai
 Rules:
 - Keep the same section format as the first pass document.
 - MERGE all new examples from the refinements into the appropriate sections.
-- If refinements found corrections, apply them (e.g., if first pass said "uses ta" but refinements show "uses timi", fix it).
+- If refinements found corrections, apply them (e.g., if first pass got a pronoun or verb form wrong, fix it based on actual examples).
 - If refinements found new patterns or moods, add new subsections.
 - EVERY section should now have 8-15 EXACT example messages minimum.
 - The Language & Word Choices section should be EXHAUSTIVE — every pronoun, verb form, spelling variant, and recurring phrase.
@@ -271,7 +271,7 @@ ${document}
 Audit each section. For EACH section, answer:
 1. Does it contain REAL, EXACT example messages copied word-for-word? (not paraphrased, not summarized, not described)
 2. How many exact example messages does it have? (count messages in quotes or on their own lines that look like real texts)
-3. Are the examples specific enough to be useful? ("he says casual things" = USELESS. "he says 'khai bro kasto xau'" = USEFUL)
+3. Are the examples specific enough to be useful? (vague descriptions like "he says casual things" = USELESS. Exact quoted messages = USEFUL)
 
 Mark each section as:
 - PASS: Has 5+ real exact examples that are specific
