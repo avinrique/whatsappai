@@ -14,6 +14,7 @@ const DEFAULTS = {
   importState: {},
   scheduledMessages: [],
   userName: 'Avin',
+  triggerWord: 'alex',
 };
 
 let _config = null;

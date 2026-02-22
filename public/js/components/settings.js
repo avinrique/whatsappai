@@ -122,6 +122,7 @@ const SettingsPage = {
       { key: 'openaiModel', label: 'OpenAI Model', type: 'text' },
       { key: 'ollamaModel', label: 'Ollama Model', type: 'text' },
       { key: 'ollamaHost', label: 'Ollama Host', type: 'text' },
+      { key: 'triggerWord', label: 'Self-Chat Trigger Word', type: 'text' },
     ];
 
     container.innerHTML = fields.map(f => {

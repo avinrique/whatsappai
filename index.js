@@ -6,6 +6,7 @@ const { createClient, getClient } = require('./src/whatsapp/client');
 const embeddings = require('./src/data/embeddings');
 const vectordb = require('./src/data/vectordb');
 const autoReply = require('./src/agent/auto-reply');
+const alex = require('./src/agent/alex');
 const scheduler = require('./src/scheduler/scheduler');
 const commands = require('./src/cli/commands');
 const { createWebServer } = require('./src/web/server');
@@ -95,6 +96,19 @@ client.on('message', async (msg) => {
 // --- Outgoing Messages (sent from phone) ---
 client.on('message_create', async (msg) => {
   if (!msg.fromMe) return;
+
+  // Check for Alex command (self-chat + trigger word)
+  if (alex.isAlexCommand(msg)) {
+    await alex.handleAlexCommand(msg, client);
+    return;
+  }
+
+  // Check for pending Alex clarification (self-chat reply without trigger)
+  if (alex.hasPendingClarification(msg)) {
+    await alex.handleClarification(msg, client);
+    return;
+  }
+
   await autoReply.handleOutgoingMessage(msg);
 });
 

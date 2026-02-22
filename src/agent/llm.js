@@ -26,6 +26,10 @@ async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
     ...messages.map(m => ({ role: m.role, content: m.content })),
   ];
 
+  const inputChars = formatted.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
+  const startTime = Date.now();
+  console.log(`  \x1b[90m[LLM] OpenAI/${model} | ${inputChars} chars in | max ${maxTokens} tokens out...\x1b[0m`);
+
   const response = await client.chat.completions.create({
     model,
     messages: formatted,
@@ -33,7 +37,11 @@ async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
     temperature: 0.5,
   });
 
-  return response.choices[0].message.content;
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const output = response.choices[0].message.content;
+  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${output?.length || 0} chars out\x1b[0m`);
+
+  return output;
 }
 
 async function callOllama(systemPrompt, messages, maxTokens = 300) {
@@ -45,22 +53,48 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
     ...messages.map(m => ({ role: m.role, content: m.content })),
   ];
 
-  const response = await fetch(`${host}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: formatted,
-      stream: false,
-      options: { num_predict: maxTokens, temperature: 0.5 },
-    }),
-  });
+  // Calculate input size for logging
+  const inputChars = formatted.reduce((sum, m) => sum + m.content.length, 0);
+  const startTime = Date.now();
+  console.log(`  \x1b[90m[LLM] Ollama/${model} | ${inputChars} chars in | max ${maxTokens} tokens out...\x1b[0m`);
+
+  // Timeout: ~30s per 1000 tokens requested, minimum 60s
+  const timeoutMs = Math.max(60000, maxTokens * 30);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(`${host}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: formatted,
+        stream: false,
+        options: { num_predict: maxTokens, temperature: 0.5 },
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error(`Ollama timed out after ${Math.round(timeoutMs / 1000)}s (model: ${model}, max_tokens: ${maxTokens})`);
+    }
+    throw new Error(`Ollama connection failed: ${err.message} — is Ollama running at ${host}?`);
+  }
+  clearTimeout(timer);
 
   if (!response.ok) {
-    throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
+    const body = await response.text().catch(() => '');
+    throw new Error(`Ollama error: ${response.status} ${response.statusText}${body ? ` — ${body.slice(0, 200)}` : ''}`);
   }
 
   const data = await response.json();
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const outputLen = data.message?.content?.length || 0;
+  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${outputLen} chars out\x1b[0m`);
+
   return data.message.content;
 }
 
