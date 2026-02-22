@@ -62,6 +62,7 @@ const api = {
 
   // Profiles
   getProfiles: () => api.get('/api/profiles'),
+  getActiveBuilds: () => api.get('/api/profiles/building'),
   getProfile: (contactId) => api.get(`/api/profiles/${encodeURIComponent(contactId)}`),
   generateProfileQuestions: (contactId, contactName) => api.post(`/api/profiles/${encodeURIComponent(contactId)}/questions`, { contactName }),
   buildProfile: (contactId, contactName, relationshipContext, profileQA) => api.post(`/api/profiles/${encodeURIComponent(contactId)}/build`, { contactName, relationshipContext, profileQA }),

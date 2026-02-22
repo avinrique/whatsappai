@@ -50,16 +50,53 @@ const ProfilesPage = {
 
   async loadData() {
     try {
-      const [profiles, chats] = await Promise.all([
+      const [profiles, chats, activeBuilds] = await Promise.all([
         api.getProfiles(),
         api.getChats().catch(() => []),
+        api.getActiveBuilds().catch(() => []),
       ]);
       this.profiles = profiles;
       this.allChats = chats;
       this.renderContactList();
       this.renderProfiles();
+
+      // Resume progress display for any active builds
+      if (activeBuilds.length > 0) {
+        this.resumeActiveBuilds(activeBuilds);
+      }
     } catch (err) {
       document.getElementById('profiles-list').innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+    }
+  },
+
+  resumeActiveBuilds(builds) {
+    const container = document.getElementById('profile-build-progress');
+    if (!container) return;
+
+    const names = builds.map(b => b.contactName).join(', ');
+    container.style.display = 'block';
+
+    // Show latest progress from the most recent build
+    const build = builds[builds.length - 1];
+    const progress = build.lastProgress || {};
+
+    const btn = document.getElementById('btn-build-profile');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Building...';
+    }
+
+    // Render current state
+    if (progress.phase === 'chunk' && progress.step && progress.total) {
+      const pct = Math.round((progress.step / progress.total) * 100);
+      const passLabel = progress.pass === 1 ? 'Pass 1 — Pattern extraction' : 'Pass 2 — Deep refinement';
+      container.innerHTML = `
+        <div style="font-size: 12px; color: var(--accent); margin-bottom: 6px; font-weight: 500;">Building profile for ${build.contactName} — ${passLabel}</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: ${pct}%"></div></div>
+        <div class="progress-text">${progress.message || 'Processing...'} (${pct}% overall)</div>
+      `;
+    } else {
+      container.innerHTML = `<div class="progress-text"><span class="spinner"></span> Building profile for ${build.contactName} — ${progress.message || 'Processing...'}</div>`;
     }
   },
 
@@ -289,6 +326,16 @@ const ProfilesPage = {
   onProgress(data) {
     const container = document.getElementById('profile-build-progress');
     if (!container) return;
+
+    // Make sure progress container is visible (e.g. after refresh)
+    container.style.display = 'block';
+
+    // Disable build button while building
+    const btn = document.getElementById('btn-build-profile');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Building...';
+    }
 
     if (data.phase === 'topics') {
       container.innerHTML = `<div class="progress-text"><span class="spinner"></span> ${data.message}</div>`;
