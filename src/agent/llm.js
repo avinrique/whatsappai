@@ -120,25 +120,17 @@ async function callLLM(systemPrompt, messages, maxTokens = 300) {
 
 /**
  * Call OpenAI with vision support (image_url content blocks).
- * @param {string} systemPrompt
- * @param {Array} messages - [{role, content}] where content can be text or array with image_url blocks
- * @param {Array<string>} base64Images - Array of base64-encoded images (data URIs or raw base64)
- * @param {number} maxTokens
  */
 async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
   const client = getOpenAIClient();
   const model = config.get('openaiModel') || 'gpt-4o';
 
-  // Build content array with images
   const userContent = [];
-
-  // Add text from last user message
   const lastUser = messages.find(m => m.role === 'user');
   if (lastUser) {
     userContent.push({ type: 'text', text: lastUser.content });
   }
 
-  // Add images
   for (const img of base64Images) {
     const dataUri = img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`;
     userContent.push({
@@ -152,6 +144,9 @@ async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], m
     { role: 'user', content: userContent },
   ];
 
+  const startTime = Date.now();
+  console.log(`  \x1b[90m[LLM] OpenAI/${model} vision | ${base64Images.length} image(s) | max ${maxTokens} tokens out...\x1b[0m`);
+
   const response = await client.chat.completions.create({
     model,
     messages: formatted,
@@ -159,7 +154,103 @@ async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], m
     temperature: 0.5,
   });
 
-  return response.choices[0].message.content;
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const output = response.choices[0].message.content;
+  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${output?.length || 0} chars out\x1b[0m`);
+
+  return output;
 }
 
-module.exports = { callLLM, callOpenAI, callOllama, callOpenAIWithVision };
+/**
+ * Call Ollama with vision support (base64 images in message content).
+ * Works with multimodal models like gemma3, llava, etc.
+ */
+async function callOllamaWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
+  const host = config.get('ollamaHost') || 'http://localhost:11434';
+  const model = config.get('ollamaModel') || 'llama3';
+
+  // Ollama expects images as raw base64 strings (no data: prefix) in the "images" array
+  const images = base64Images.map(img => {
+    if (img.startsWith('data:')) {
+      return img.replace(/^data:[^;]+;base64,/, '');
+    }
+    return img;
+  });
+
+  // Build messages — attach images to the user message
+  const lastUser = messages.find(m => m.role === 'user');
+  const formatted = [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: lastUser ? lastUser.content : 'Describe these images.',
+      images,
+    },
+  ];
+
+  const startTime = Date.now();
+  console.log(`  \x1b[90m[LLM] Ollama/${model} vision | ${images.length} image(s) | max ${maxTokens} tokens out...\x1b[0m`);
+
+  const timeoutMs = Math.max(120000, maxTokens * 60); // vision needs more time
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(`${host}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: formatted,
+        stream: false,
+        options: { num_predict: maxTokens, temperature: 0.5 },
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error(`Ollama vision timed out after ${Math.round(timeoutMs / 1000)}s (model: ${model})`);
+    }
+    throw new Error(`Ollama connection failed: ${err.message} — is Ollama running at ${host}?`);
+  }
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Ollama vision error: ${response.status} ${response.statusText}${body ? ` — ${body.slice(0, 200)}` : ''}`);
+  }
+
+  const data = await response.json();
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const content = data.message?.content || '';
+  console.log(`  \x1b[90m[LLM] Done in ${elapsed}s | ${content.length} chars out\x1b[0m`);
+
+  if (!content) {
+    throw new Error(`Ollama returned empty vision response (model: ${model})`);
+  }
+
+  return content;
+}
+
+/**
+ * Route vision calls to the right provider.
+ * Falls back: OpenAI → Ollama if no API key.
+ */
+async function callLLMWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
+  const provider = config.get('llmProvider') || 'openai';
+
+  if (provider === 'ollama') {
+    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens);
+  }
+
+  if (!getOpenAIApiKey()) {
+    console.log('No OPENAI_API_KEY set, falling back to Ollama vision...');
+    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens);
+  }
+
+  return callOpenAIWithVision(systemPrompt, messages, base64Images, maxTokens);
+}
+
+module.exports = { callLLM, callLLMWithVision, callOpenAI, callOllama, callOpenAIWithVision, callOllamaWithVision };

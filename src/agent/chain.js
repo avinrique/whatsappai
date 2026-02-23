@@ -14,7 +14,7 @@ const path = require('path');
 const config = require('../config/config');
 const vectordb = require('../data/vectordb');
 const styleProfiler = require('./style-profiler');
-const { callLLM, callOpenAIWithVision } = require('./llm');
+const { callLLM, callLLMWithVision } = require('./llm');
 
 // ─── ANSI colors ───
 const C = {
@@ -590,7 +590,7 @@ async function describeImages(base64Images) {
   const userPrompt = `Describe these ${base64Images.length} image(s) from a WhatsApp chat. Be detailed — the person may ask follow-up questions about specific things in the image.`;
 
   try {
-    const result = await callOpenAIWithVision(
+    const result = await callLLMWithVision(
       systemPrompt,
       [{ role: 'user', content: userPrompt }],
       base64Images,
@@ -621,7 +621,7 @@ The person is now asking: "${question}"
 Look at the image again carefully and answer their specific question. Be detailed and specific.`;
 
   try {
-    const result = await callOpenAIWithVision(
+    const result = await callLLMWithVision(
       systemPrompt,
       [{ role: 'user', content: userPrompt }],
       base64Images,
