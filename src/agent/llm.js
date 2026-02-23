@@ -58,8 +58,8 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
   const startTime = Date.now();
   console.log(`  \x1b[90m[LLM] Ollama/${model} | ${inputChars} chars in | max ${maxTokens} tokens out...\x1b[0m`);
 
-  // Timeout: ~30s per 1000 tokens requested, minimum 60s
-  const timeoutMs = Math.max(60000, maxTokens * 30);
+  // Timeout: 20 minutes for all Ollama calls
+  const timeoutMs = 1200000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
