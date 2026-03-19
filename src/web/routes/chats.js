@@ -1,6 +1,8 @@
 const express = require('express');
 const vectordb = require('../../data/vectordb');
 const agent = require('../../agent/agent');
+const chain = require('../../agent/chain');
+const styleProfiler = require('../../agent/style-profiler');
 
 module.exports = function (client) {
   const router = express.Router();
@@ -75,10 +77,22 @@ module.exports = function (client) {
         }
       }
 
-      // Then add DB messages (for older history)
+      // For DB messages within the live fetch time range, only keep ones that also
+      // appear in live (by dedup key). DB-only messages in this range are ghosts —
+      // stored in vectordb but never actually delivered on WhatsApp.
+      const liveKeys = new Set(liveMessages.map(m => `${m.timestamp}_${(m.body || '').slice(0, 50)}_${m.fromMe}`));
+      const liveMinTs = liveMessages.length > 0
+        ? Math.min(...liveMessages.map(m => m.timestamp || 0))
+        : Infinity;
+
       for (const m of dbMessages) {
         const key = `${m.timestamp}_${(m.body || '').slice(0, 50)}_${m.fromMe}`;
         if (!seen.has(key)) {
+          // If this DB message is within the live fetch window but not in live data,
+          // it's a ghost (auto-reply stored it but WhatsApp never delivered it). Skip it.
+          if (m.fromMe && m.timestamp >= liveMinTs && !liveKeys.has(key)) {
+            continue;
+          }
           seen.add(key);
           merged.push(m);
         }
@@ -145,6 +159,79 @@ module.exports = function (client) {
       }
       const reply = await agent.previewReply(contactId, contactName || contactId, message);
       res.json({ reply });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Chain-of-thought reply: full 5-step pipeline (think → decide → write → verify → rewrite)
+  router.post('/reply', async (req, res) => {
+    try {
+      const { contactId, contactName } = req.body;
+      if (!contactId || !contactName) {
+        return res.status(400).json({ error: 'contactId and contactName required' });
+      }
+
+      // Sync live messages to vectordb first so the chain sees the full conversation
+      const liveMessages = await fetchLiveMessages(client, contactId, 50);
+      if (liveMessages.length > 0) {
+        const dbMessages = await vectordb.getRecentMessages(contactId, 100);
+        const dbKeys = new Set(dbMessages.map(m => `${m.timestamp}_${(m.body || '').slice(0, 50)}_${m.fromMe}`));
+        const newLive = liveMessages.filter(m => {
+          const key = `${m.timestamp}_${(m.body || '').slice(0, 50)}_${m.fromMe}`;
+          return !dbKeys.has(key);
+        });
+        if (newLive.length > 0) {
+          console.log(`[Reply] Backfilling ${newLive.length} live messages before chain for ${contactId}`);
+          for (const m of newLive) {
+            await vectordb.storeMessage({
+              id: `live_${m.timestamp}_${contactId}_${m.fromMe}`,
+              body: m.body || '',
+              contactId,
+              contactName,
+              fromMe: m.fromMe,
+              timestamp: m.timestamp,
+              type: m.type || 'chat',
+              chatIsGroup: false,
+            });
+          }
+        }
+      }
+
+      // Get last incoming message from DB (now up-to-date)
+      const recentMessages = await vectordb.getRecentMessages(contactId, 30);
+      const lastIncoming = [...recentMessages].reverse().find(m => !m.fromMe);
+      if (!lastIncoming) {
+        return res.status(400).json({ error: 'No incoming message found to reply to' });
+      }
+
+      // Run full chain-of-thought pipeline
+      const reply = await chain.thinkAndReply(contactId, contactName, lastIncoming.body, [], []);
+
+      if (!reply) {
+        return res.status(422).json({ error: 'Verifier rejected all reply attempts' });
+      }
+
+      // Send via WhatsApp
+      await client.sendMessage(contactId, reply);
+
+      // Store in vectordb
+      const msgId = `web_${Date.now()}_${contactId}`;
+      await vectordb.storeMessage({
+        id: msgId,
+        body: reply,
+        contactId,
+        contactName,
+        fromMe: true,
+        timestamp: Math.floor(Date.now() / 1000),
+        type: 'chat',
+        chatIsGroup: false,
+      });
+
+      // Track for profile updates
+      styleProfiler.trackNewMessage(contactId);
+
+      res.json({ reply, timestamp: Math.floor(Date.now() / 1000) });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

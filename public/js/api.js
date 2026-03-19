@@ -49,6 +49,7 @@ const api = {
   getMessages: (contactId, limit = 50) => api.get(`/api/chats/${encodeURIComponent(contactId)}/messages?limit=${limit}`),
   sendMessage: (contactId, message, contactName) => api.post('/api/chats/send', { contactId, message, contactName }),
   previewReply: (contactId, contactName, message) => api.post('/api/chats/preview', { contactId, contactName, message }),
+  chainReply: (contactId, contactName) => api.post('/api/chats/reply', { contactId, contactName }),
 
   // Import
   getImportChats: () => api.get('/api/import/chats'),

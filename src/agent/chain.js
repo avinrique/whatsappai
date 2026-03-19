@@ -368,6 +368,7 @@ async function write(userName, contactName, decideOutput, thinkOutput, relations
 RULE #1: Match ${userName}'s typical message length. Usually ${s.avg}-${s.upper} words, depending on the situation. Simple replies can be ${s.min}-${s.avg} words. More substantive replies up to ${effectiveUpper} words.
 RULE #2: Text IDENTICALLY to ${userName}. Not similar. IDENTICAL style.
 RULE #3: The reply must make sense in the conversation flow.
+RULE #4: Match ${userName}'s EXACT punctuation habits. If they don't use periods, DON'T add periods. If they skip commas, skip commas. No punctuation at end of messages = leave them bare. NEVER add punctuation ${userName} doesn't use.
 
 ${userName}'s REAL recent messages for reference: ${userExamples || '(check the style doc)'}
 
@@ -395,7 +396,8 @@ Match the length to the SITUATION. Casual = short. Needs a real answer = can be 
 - NEVER make up facts. Dodge if unsure.
 - NEVER sound helpful, enthusiastic, or formal. Be lazy and casual like a real person.
 - NEVER repeat the same filler word if it was already used in recent messages. Vary your responses. If asked a real question, give a real answer — not filler.
-- NEVER ignore an image with a single-word filler. React to it or ask about it.`;
+- NEVER ignore an image with a single-word filler. React to it or ask about it.
+- NEVER add punctuation (periods, commas) that ${userName} doesn't use. If the style doc shows minimal punctuation, your messages must also have minimal/no punctuation. Proper punctuation on a casual texter = dead giveaway of AI.`;
 
   let userPrompt = '';
   if (conversationFlow) {
@@ -493,6 +495,8 @@ AI'S REPLY AS ${userName}: "${reply}"\n\n`;
 6. SOUNDS HUMAN: Does it sound like a real person texting? Overly polished full sentences = likely AI.
 
 7. NO FABRICATION: Does it claim to know something the AI can't know?
+
+8. PUNCTUATION: Does the reply match ${userName}'s punctuation habits? If ${userName} rarely uses periods/commas and the reply has proper punctuation — FAIL.
 
 VERDICT (output EXACTLY this format):
 PASS or FAIL

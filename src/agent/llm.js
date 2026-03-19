@@ -45,7 +45,7 @@ async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
 }
 
 async function callOllama(systemPrompt, messages, maxTokens = 300) {
-  const host = config.get('ollamaHost') || 'http://localhost:11434';
+  const host = (config.get('ollamaHost') || 'http://localhost:11434').replace('localhost', '127.0.0.1');
   const model = config.get('ollamaModel') || 'llama3';
 
   const formatted = [
@@ -166,7 +166,7 @@ async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], m
  * Works with multimodal models like gemma3, llava, etc.
  */
 async function callOllamaWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
-  const host = config.get('ollamaHost') || 'http://localhost:11434';
+  const host = (config.get('ollamaHost') || 'http://localhost:11434').replace('localhost', '127.0.0.1');
   const model = config.get('ollamaModel') || 'llama3';
 
   // Ollama expects images as raw base64 strings (no data: prefix) in the "images" array

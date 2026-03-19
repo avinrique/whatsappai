@@ -96,8 +96,10 @@ function createWebServer(whatsappClient) {
       // Store outgoing messages in vectordb (skip if already stored by send route or auto-reply)
       if (msg.body) {
         const msgId = msg.id._serialized || `${msg.to}_${msg.timestamp}`;
-        const exists = await vectordb.messageExists(msgId).catch(() => false);
-        if (!exists) {
+        // Check both by ID and by content — auto-reply/web store with different ID formats
+        const existsById = await vectordb.messageExists(msgId).catch(() => false);
+        const existsByContent = existsById ? true : await vectordb.messageDuplicateExists(msg.to, msg.body, msg.timestamp, true).catch(() => false);
+        if (!existsByContent) {
           vectordb.storeMessage({
             id: msgId,
             body: msg.body,

@@ -8,6 +8,27 @@ const { formatTimingStats } = require('../data/chat-parser');
 const DOCS_DIR = path.join(config.DATA_DIR, 'style-profiles');
 const CHUNK_SIZE = 100; // messages per LLM chunk
 const UPDATE_THRESHOLD = 25; // new messages before auto-refresh
+const MAX_RETRIES = 3; // retry failed LLM calls
+const RETRY_DELAY_MS = 5000; // wait between retries
+
+/**
+ * Retry wrapper for LLM calls. Retries up to MAX_RETRIES times with exponential backoff.
+ */
+async function callLLMWithRetry(systemPrompt, messages, maxTokens, label = 'LLM call') {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await callLLM(systemPrompt, messages, maxTokens);
+    } catch (err) {
+      console.error(`  [Profile] ${label} failed (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`);
+      if (attempt === MAX_RETRIES) {
+        throw new Error(`${label} failed after ${MAX_RETRIES} attempts: ${err.message}`);
+      }
+      const delay = RETRY_DELAY_MS * attempt;
+      console.log(`  [Profile] Retrying in ${delay / 1000}s...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
 
 function getDocPath(contactId) {
   const safe = contactId.replace(/[^a-zA-Z0-9]/g, '_');
@@ -70,19 +91,28 @@ Do a DEEP extraction of how "${userName}" texts. Go through EVERY single message
 
 === STYLE & TONE ===
 1. MOODS: What emotional states appear? For EACH mood give 8-10 EXACT messages from ${userName} (WORD FOR WORD, character for character). Moods to look for: casual/chill, happy/excited, annoyed/angry, caring/concerned, joking/playful, sad/down, busy/distracted, flirty, sarcastic.
-2. MESSAGE STRUCTURE: How long are messages (word count)? Does ${userName} send one message or multiple short ones in a row? Fragments or full sentences? Use of punctuation, line breaks, emojis, stickers? Give exact examples.
-3. FORMALITY LEVEL: How formal/informal is ${userName}? Does it change based on topic or mood?
+2. MESSAGE STRUCTURE: How long are messages (word count)? Does ${userName} send one message or multiple short ones in a row? Fragments or full sentences? Use of line breaks, emojis, stickers? Give exact examples.
+3. PUNCTUATION HABITS (CRITICAL): Go through EVERY message from ${userName} and analyze punctuation:
+   - Periods: Does ${userName} end messages with periods? Count messages WITH vs WITHOUT periods. Frequency: never / rarely / sometimes / always.
+   - Commas: Does ${userName} use commas? How often? Give exact examples WITH and WITHOUT commas.
+   - Exclamation marks: Does ${userName} use them? In what contexts?
+   - Question marks: Does ${userName} use them when asking questions, or skip them?
+   - Give 8+ exact example messages that END WITHOUT any punctuation (bare endings).
+   - Give 8+ exact example messages that END WITH punctuation.
+   - Estimate: what % of ${userName}'s messages end bare (no punctuation) vs with punctuation?
+   - This is CRITICAL because AI tends to add punctuation that casual texters don't use.
+4. FORMALITY LEVEL: How formal/informal is ${userName}? Does it change based on topic or mood?
 
 === LANGUAGE & WORD CHOICES (MOST IMPORTANT) ===
-4. PRIMARY LANGUAGE: What language(s) does ${userName} use? Native script or romanized? Code-switching patterns?
-5. PRONOUNS & ADDRESS: EXACT pronouns and address forms for ${contactName} — list every instance with the full message. Note formal vs informal.
-6. VERB FORMS: EXACT verb conjugations and grammar patterns. Copy the exact forms — do NOT correct or standardize them.
-7. SPELLING FINGERPRINTS: How does ${userName} spell specific words? Every distinct non-standard spelling, abbreviation, and romanization choice. These are unique to the user.
-8. RECURRING PHRASES: Greetings, sign-offs, reactions, filler words, exclamations. Copy every distinct one you find.
-9. SLANG & EXPRESSIONS: Any slang, colloquialisms, inside jokes, or unique expressions. Quote them exactly.
+5. PRIMARY LANGUAGE: What language(s) does ${userName} use? Native script or romanized? Code-switching patterns?
+6. PRONOUNS & ADDRESS: EXACT pronouns and address forms for ${contactName} — list every instance with the full message. Note formal vs informal.
+7. VERB FORMS: EXACT verb conjugations and grammar patterns. Copy the exact forms — do NOT correct or standardize them.
+8. SPELLING FINGERPRINTS: How does ${userName} spell specific words? Every distinct non-standard spelling, abbreviation, and romanization choice. These are unique to the user.
+9. RECURRING PHRASES: Greetings, sign-offs, reactions, filler words, exclamations. Copy every distinct one you find.
+10. SLANG & EXPRESSIONS: Any slang, colloquialisms, inside jokes, or unique expressions. Quote them exactly.
 
 === RESPONSE PATTERNS ===
-10. HOW ${userName} RESPONDS TO:
+11. HOW ${userName} RESPONDS TO:
     - Questions (direct answer? deflection? counter-question?)
     - Good news/excitement from ${contactName}
     - Bad news/complaints from ${contactName}
@@ -91,20 +121,21 @@ Do a DEEP extraction of how "${userName}" texts. Go through EVERY single message
     - Images/media
     - Long messages vs short messages
     Give 3+ exact examples for EACH response type you see.
-11. CONVERSATION FLOW: Who initiates? How do conversations start and end? Does ${userName} leave conversations abruptly or say goodbye?
-12. DOUBLE-TEXTING: Does ${userName} send multiple messages when one would do? Give examples.
+12. CONVERSATION FLOW: Who initiates? How do conversations start and end? Does ${userName} leave conversations abruptly or say goodbye?
+13. DOUBLE-TEXTING: Does ${userName} send multiple messages when one would do? Give examples.
 
 === RELATIONSHIP SIGNALS ===
-13. How does ${userName} address ${contactName}? (nicknames, terms of endearment, titles)
-14. What topics does ${userName} bring up vs avoid?
-15. Power dynamics — who asks for favors? Who makes plans? Who apologizes first?
+14. How does ${userName} address ${contactName}? (nicknames, terms of endearment, titles)
+15. What topics does ${userName} bring up vs avoid?
+16. Power dynamics — who asks for favors? Who makes plans? Who apologizes first?
 
 For ALL points: quote EXACT messages from ${userName}. More examples = better. Be exhaustive, not summarative.`;
 
-  return callLLM(
+  return callLLMWithRetry(
     'You extract texting patterns from conversations with extreme attention to exact word choices, pronouns, verb forms, and spelling. Always copy messages word-for-word. Be exhaustive.',
     [{ role: 'user', content: prompt }],
-    2500
+    2500,
+    `Pass 1 chunk ${chunkIndex + 1}/${totalChunks}`
   );
 }
 
@@ -155,9 +186,19 @@ This section is CRITICAL. The AI must use these EXACT words, not synonyms or alt
 - Average message length in words
 - Does ${userName} use emojis? Which ones? How often?
 - Capitalization habits (all lowercase? Normal? Caps for emphasis?)
-- Punctuation (periods, exclamation marks, question marks — or none?)
 - Does ${userName} send single messages or multiple short ones in a row?
 - Does ${userName} use voice notes, stickers, or GIFs?)
+
+### Punctuation Habits (CRITICAL FOR AI)
+This section is CRITICAL. AI tends to add punctuation that casual texters don't use. The AI MUST match ${userName}'s exact punctuation patterns.
+- Periods (.): Does ${userName} end messages with periods? Frequency: never / rarely / sometimes / always. Give 8+ examples.
+- Commas (,): Does ${userName} use commas within messages? Frequency. Give 8+ examples.
+- Exclamation marks (!): When and how often? Give examples.
+- Question marks (?): Does ${userName} use them when asking questions, or skip them? Give examples.
+- Messages ending bare (no punctuation): Give 8+ exact examples of messages that end with NO punctuation at all.
+- Messages ending WITH punctuation: Give 8+ exact examples (if any).
+- Overall estimate: What % of messages end bare vs with punctuation?
+- RULE FOR AI: If ${userName} rarely/never uses periods or commas, the AI must NOT add them. Proper punctuation on a casual texter = dead giveaway of AI.
 
 ## When things are normal/casual
 (How ${userName} texts in regular everyday conversation. 8-12 EXACT example messages.)
@@ -210,15 +251,17 @@ How ${userName} typically responds to different inputs. For EACH, give 3-5 exact
 IMPORTANT RULES:
 - Every section MUST have real example messages copied EXACTLY from the analyses — word for word, character for character.
 - The Language & Word Choices section is the HIGHEST PRIORITY. Every word form, spelling, and pronoun must be preserved exactly.
+- The Punctuation Habits section is CRITICAL. Count actual punctuation usage and be precise about frequencies.
 - Include MORE examples rather than fewer. 8+ per section.
 - If a section has no data, write "No clear pattern found" and skip it.
 - Do NOT make up examples. Only use what appears in the analyses.
 - The document should be LONG and THOROUGH. This is the AI's only reference.`;
 
-  return callLLM(
+  return callLLMWithRetry(
     'You create comprehensive, detailed texting style documents. You are extremely precise about word choices, pronouns, verb forms, and spelling. Always include exact example messages copied word-for-word. Never make up examples. More detail is always better.',
     [{ role: 'user', content: prompt }],
-    6000
+    6000,
+    'Pass 1 merge'
   );
 }
 
@@ -280,10 +323,11 @@ The first pass may have MISSED things. Your job is to find EVERYTHING the first 
 
 List EVERY finding with the EXACT message copied word-for-word. Even if it seems minor — include it. More data = better profile.`;
 
-  return callLLM(
+  return callLLMWithRetry(
     'You do deep second-pass analysis of conversations. You find everything the first pass missed. You are exhaustive and precise. You copy every message word-for-word. You never skip details.',
     [{ role: 'user', content: prompt }],
-    2500
+    2500,
+    `Pass 2 refine chunk ${chunkIndex + 1}/${totalChunks}`
   );
 }
 
@@ -341,17 +385,26 @@ This section is CRITICAL. The AI must use these EXACT words, not synonyms or alt
 - Average message length in words
 - Does ${userName} use emojis? Which ones? How often?
 - Capitalization habits (all lowercase? Normal? Caps for emphasis?)
-- Punctuation (periods, exclamation marks, question marks — or none?)
 - Does ${userName} send single messages or multiple short ones in a row?
 - Does ${userName} use voice notes, stickers, or GIFs?)
+
+### Punctuation Habits (CRITICAL FOR AI)
+This section is CRITICAL. AI tends to add punctuation that casual texters don't use. The AI MUST match ${userName}'s exact punctuation patterns.
+- Periods (.): Does ${userName} end messages with periods? Frequency: never / rarely / sometimes / always. Give 8+ examples WITH and WITHOUT.
+- Commas (,): Does ${userName} use commas within messages? Frequency. Give 8+ examples WITH and WITHOUT.
+- Exclamation marks (!): When and how often? Give examples.
+- Question marks (?): Does ${userName} use them when asking questions, or skip them? Give examples.
+- Messages ending bare (no punctuation): Give 8+ exact examples of messages that end with NO punctuation at all.
+- Messages ending WITH punctuation: Give 8+ exact examples (if any).
+- Overall estimate: What % of messages end bare vs with punctuation?
+- RULE FOR AI: If ${userName} rarely/never uses periods or commas, the AI must NOT add them. Proper punctuation on a casual texter = dead giveaway of AI.
 
 ## Message Structure & Habits
 (Detailed breakdown:
 - Typical message length range (shortest and longest typical messages with examples)
 - Single message vs multi-message chains — when does ${userName} split into multiple messages?
 - Use of line breaks within messages
-- Trailing punctuation patterns (... or ??? or !!! or none)
-- Emphasis patterns: CAPS, repeated letters (nooooo), repeated punctuation
+- Emphasis patterns: CAPS, repeated letters (nooooo), repeated punctuation (??? or !!!)
 - Time-of-day patterns — any difference in texting style at different times?)
 
 ## When things are normal/casual
@@ -407,6 +460,7 @@ MERGE RULES:
 - ADD all new examples from refinements into the appropriate sections.
 - ADD new patterns or moods found in refinements as subsections.
 - EVERY section must have 8-15 EXACT example messages minimum. The Language section should have MORE.
+- The Punctuation Habits section is CRITICAL. Count actual punctuation usage from both passes and be precise about frequencies.
 - Do NOT make up examples. Only use what appears in the first pass and refinements.
 - Copy all examples EXACTLY — word for word, character for character.
 - If a section has no data from either pass, write "No clear pattern found" and skip it.
@@ -414,10 +468,11 @@ MERGE RULES:
 
 Write the COMPLETE final document:`;
 
-  return callLLM(
+  return callLLMWithRetry(
     'You create the most detailed, comprehensive texting style documents possible. You merge first-pass and second-pass findings into one exhaustive guide. Every example is copied word-for-word. You never make up examples. More detail is always better.',
     [{ role: 'user', content: prompt }],
-    6000
+    6000,
+    'Pass 2 merge'
   );
 }
 
@@ -476,10 +531,11 @@ SECTION_NAME: PASS/WEAK/FAIL/MISSING — reason (count of real examples found)
 
 At the end, list ALL sections that got WEAK, FAIL, or MISSING.`;
 
-  const audit = await callLLM(
+  const audit = await callLLMWithRetry(
     'You audit texting style documents for quality. You can tell the difference between real copied messages and vague descriptions. Be strict.',
     [{ role: 'user', content: auditPrompt }],
-    800
+    800,
+    'Verify audit'
   );
 
   // Check if any sections failed or are weak
@@ -565,10 +621,11 @@ RULES:
 
 Write the COMPLETE patched document:`;
 
-  const patched = await callLLM(
+  const patched = await callLLMWithRetry(
     'You patch style documents by inserting REAL examples from raw message data. You never make up messages. You copy them character-for-character from the provided data. You ensure all required sections exist.',
     [{ role: 'user', content: patchPrompt }],
-    6000
+    6000,
+    'Verify patch'
   );
 
   return patched;
@@ -633,10 +690,11 @@ For each topic: give 3+ exact message examples showing how it comes up.
 
 Be SPECIFIC. Use EXACT quotes from the conversation for every point. This analysis helps an AI understand the WORLD and CONTEXT of these two people's relationship, not just how they type.`;
 
-  return callLLM(
+  return callLLMWithRetry(
     'You analyze conversation content, topics, and context. You are specific and always use exact quotes as evidence. You identify people, places, interests, and relationship dynamics.',
     [{ role: 'user', content: prompt }],
-    1800
+    1800,
+    'Topic analysis'
   );
 }
 
@@ -959,10 +1017,11 @@ WHAT TO UPDATE:
 
 Write the COMPLETE updated document (keep all sections, add new content):`;
 
-  const updated = await callLLM(
+  const updated = await callLLMWithRetry(
     'You update texting style documents with new data. Keep all existing content and add new findings. Be thorough and preserve the full document structure.',
     [{ role: 'user', content: prompt }],
-    4000
+    4000,
+    'Incremental update'
   );
 
   const newMeta = {
@@ -1057,10 +1116,11 @@ OUTPUT FORMAT (strict JSON array):
 ]`;
 
   try {
-    const result = await callLLM(
+    const result = await callLLMWithRetry(
       'You generate smart profile-building questions based on conversation analysis. Output strict JSON only.',
       [{ role: 'user', content: prompt }],
-      500
+      500,
+      'Profile questions'
     );
 
     // Parse the JSON from the response

@@ -31,6 +31,7 @@ const ChatsPage = {
             <div class="live-indicator"><span class="live-dot"></span> Live</div>
           </div>
           <div style="margin-left: auto; display: flex; gap: 8px;">
+            <button class="btn btn-primary btn-sm" id="btn-chain-reply" style="display: none;">Reply</button>
             <button class="btn btn-outline btn-sm" id="btn-preview-ai">Preview AI Reply</button>
           </div>
         </div>
@@ -74,6 +75,14 @@ const ChatsPage = {
     }).join('');
 
     container.scrollTop = container.scrollHeight;
+    this.updateReplyButton();
+  },
+
+  updateReplyButton() {
+    const btn = document.getElementById('btn-chain-reply');
+    if (!btn) return;
+    const lastMsg = this.messages.length > 0 ? this.messages[this.messages.length - 1] : null;
+    btn.style.display = (lastMsg && !lastMsg.fromMe) ? '' : 'none';
   },
 
   bindEvents() {
@@ -93,6 +102,11 @@ const ChatsPage = {
 
     if (btnPreview) {
       btnPreview.addEventListener('click', () => this.previewAI());
+    }
+
+    const btnChainReply = document.getElementById('btn-chain-reply');
+    if (btnChainReply) {
+      btnChainReply.addEventListener('click', () => this.chainReply());
     }
   },
 
@@ -146,6 +160,29 @@ const ChatsPage = {
 
     btn.disabled = false;
     btn.textContent = 'Preview AI Reply';
+  },
+
+  async chainReply() {
+    const btn = document.getElementById('btn-chain-reply');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Thinking...';
+
+    try {
+      const { reply, timestamp } = await api.chainReply(this.currentContactId, this.currentContactName);
+      this.messages.push({
+        body: reply,
+        fromMe: true,
+        timestamp: timestamp || Math.floor(Date.now() / 1000),
+      });
+      this.renderMessages();
+    } catch (err) {
+      App.toast('Reply failed: ' + err.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Reply';
   },
 
   addRealtimeMessage(data, fromMe) {
