@@ -78,7 +78,7 @@ function formatConversation(messages, userName, contactName) {
 /**
  * Analyze one chunk of conversation and extract patterns.
  */
-async function analyzeChunk(chunk, userName, contactName, chunkIndex, totalChunks) {
+async function analyzeChunk(chunk, userName, contactName, chunkIndex, totalChunks, qaContext) {
   console.log(`\n[Profile] Pass 1: Analyzing chunk ${chunkIndex + 1}/${totalChunks} (${chunk.length} messages)...`);
   const convo = formatConversation(chunk, userName, contactName);
 
@@ -129,12 +129,12 @@ Do a DEEP extraction of how "${userName}" texts. Go through EVERY single message
 15. What topics does ${userName} bring up vs avoid?
 16. Power dynamics — who asks for favors? Who makes plans? Who apologizes first?
 
-For ALL points: quote EXACT messages from ${userName}. More examples = better. Be exhaustive, not summarative.`;
+For ALL points: quote EXACT messages from ${userName}. More examples = better. Be exhaustive, not summarative.${qaContext ? `\n\nCONTEXT FROM USER about this relationship:\n${qaContext}\nUse this context to guide your analysis — pay extra attention to patterns the user highlighted.` : ''}`;
 
   return callLLMWithRetry(
-    'You extract texting patterns from conversations with extreme attention to exact word choices, pronouns, verb forms, and spelling. Always copy messages word-for-word. Be exhaustive.',
+    'You extract texting patterns from conversations with extreme attention to exact word choices, pronouns, verb forms, and spelling. Always copy messages word-for-word. Be exhaustive. Include EVERY example you find.',
     [{ role: 'user', content: prompt }],
-    2500,
+    4000,
     `Pass 1 chunk ${chunkIndex + 1}/${totalChunks}`
   );
 }
@@ -250,17 +250,18 @@ How ${userName} typically responds to different inputs. For EACH, give 3-5 exact
 
 IMPORTANT RULES:
 - Every section MUST have real example messages copied EXACTLY from the analyses — word for word, character for character.
+- PRESERVE ALL EXACT EXAMPLES from every chunk analysis — do NOT summarize or drop examples. More examples = better profile.
 - The Language & Word Choices section is the HIGHEST PRIORITY. Every word form, spelling, and pronoun must be preserved exactly.
 - The Punctuation Habits section is CRITICAL. Count actual punctuation usage and be precise about frequencies.
-- Include MORE examples rather than fewer. 8+ per section.
+- Include MORE examples rather than fewer. 8+ per section minimum, but include ALL examples found across chunks.
 - If a section has no data, write "No clear pattern found" and skip it.
 - Do NOT make up examples. Only use what appears in the analyses.
 - The document should be LONG and THOROUGH. This is the AI's only reference.`;
 
   return callLLMWithRetry(
-    'You create comprehensive, detailed texting style documents. You are extremely precise about word choices, pronouns, verb forms, and spelling. Always include exact example messages copied word-for-word. Never make up examples. More detail is always better.',
+    'You create comprehensive, detailed texting style documents. You are extremely precise about word choices, pronouns, verb forms, and spelling. Always include exact example messages copied word-for-word. Never make up examples. Preserve ALL examples from every chunk — do not drop or summarize them.',
     [{ role: 'user', content: prompt }],
-    6000,
+    8000,
     'Pass 1 merge'
   );
 }
@@ -490,6 +491,20 @@ Write the COMPLETE final document:`;
 async function verifyDocument(document, allMessages, userName, contactName, onProgress) {
   console.log(`[Profile] Verifying document quality...`);
   if (onProgress) onProgress({ phase: 'verifying', message: 'Verifying document quality...' });
+
+  // Quick heuristic: count quoted examples per section. If all sections look strong, skip LLM audit.
+  const sections = document.split(/(?=^## )/m);
+  let weakCount = 0;
+  for (const section of sections) {
+    if (!section.startsWith('## ')) continue;
+    // Count lines that look like quoted examples (start with ", -, or contain : followed by text)
+    const exampleLines = section.split('\n').filter(l => /^\s*[-"•]|"[^"]{3,}"/.test(l)).length;
+    if (exampleLines < 3) weakCount++;
+  }
+  if (weakCount === 0 && sections.length > 5) {
+    console.log(`[Profile] Heuristic check passed — all sections have sufficient examples, skipping LLM audit.`);
+    return document;
+  }
 
   // Step 1: Ask LLM to audit the document
   const auditPrompt = `You are a strict quality auditor for a texting style document. This document is used by an AI to perfectly replicate how "${userName}" texts "${contactName}" on WhatsApp.
@@ -845,16 +860,16 @@ async function buildDocument(contactId, contactName, onProgress, relationshipCon
     chunks.push(allMessages.slice(i, i + CHUNK_SIZE));
   }
 
-  // +1 for topic analysis, +1 per pass merge
-  const totalSteps = 1 + chunks.length + 1 + chunks.length + 1;
+  // +1 for topic analysis, +1 for merge, +1 for verify
+  const totalSteps = 1 + chunks.length + 1 + 1;
   let stepCounter = 0;
 
   // ===== Topic analysis =====
   if (onProgress) onProgress({ phase: 'topics', message: 'Analyzing conversation topics...', step: ++stepCounter, total: totalSteps });
   const topicAnalysis = await analyzeTopics(allMessages, userName, contactName);
 
-  // ===== PASS 1: Initial analysis =====
-  if (onProgress) onProgress({ phase: 'pass1', message: 'Pass 1: Analyzing patterns...' });
+  // ===== Single-pass analysis (enhanced prompts + higher token budget replace old 2-pass) =====
+  if (onProgress) onProgress({ phase: 'pass1', message: 'Analyzing patterns...' });
 
   const analyses = [];
   for (let i = 0; i < chunks.length; i++) {
@@ -864,9 +879,12 @@ async function buildDocument(contactId, contactName, onProgress, relationshipCon
       current: i + 1,
       total: totalSteps,
       step: ++stepCounter,
-      message: `Pass 1: Chunk ${i + 1}/${chunks.length}`,
+      message: `Analyzing chunk ${i + 1}/${chunks.length}`,
     });
-    const analysis = await analyzeChunk(chunks[i], userName, contactName, i, chunks.length);
+    const qaContext = profileQA && profileQA.length > 0
+      ? profileQA.filter(qa => qa.answer && qa.answer.trim()).map(qa => `Q: ${qa.question}\nA: ${qa.answer}`).join('\n')
+      : '';
+    const analysis = await analyzeChunk(chunks[i], userName, contactName, i, chunks.length, qaContext);
     analyses.push(analysis);
   }
 
@@ -875,35 +893,9 @@ async function buildDocument(contactId, contactName, onProgress, relationshipCon
     pass: 1,
     step: ++stepCounter,
     total: totalSteps,
-    message: 'Pass 1: Merging analyses...',
+    message: 'Merging analyses into document...',
   });
-  const firstPassDoc = await mergeAnalyses(analyses, userName, contactName);
-
-  // ===== PASS 2: Deep refinement =====
-  if (onProgress) onProgress({ phase: 'pass2', message: 'Pass 2: Deep refinement...' });
-
-  const refinements = [];
-  for (let i = 0; i < chunks.length; i++) {
-    if (onProgress) onProgress({
-      phase: 'chunk',
-      pass: 2,
-      current: chunks.length + i + 2,
-      total: totalSteps,
-      step: ++stepCounter,
-      message: `Pass 2: Refining chunk ${i + 1}/${chunks.length}`,
-    });
-    const refinement = await deepRefineChunk(chunks[i], userName, contactName, firstPassDoc, i, chunks.length);
-    refinements.push(refinement);
-  }
-
-  if (onProgress) onProgress({
-    phase: 'merging',
-    pass: 2,
-    step: ++stepCounter,
-    total: totalSteps,
-    message: 'Pass 2: Building final document...',
-  });
-  let finalDocument = await mergeRefinements(firstPassDoc, refinements, userName, contactName);
+  let finalDocument = await mergeAnalyses(analyses, userName, contactName);
 
   // ===== Verify & patch weak sections =====
   finalDocument = await verifyDocument(finalDocument, allMessages, userName, contactName, onProgress);
@@ -1037,17 +1029,30 @@ Write the COMPLETE updated document (keep all sections, add new content):`;
   return { document: updated, meta: newMeta };
 }
 
+// In-memory counters to batch disk writes (flush every 5 messages or on threshold)
+const _pendingCounts = new Map();
+const BATCH_FLUSH_EVERY = 5;
+
 /**
  * Track a new message and trigger update if threshold reached.
+ * Batches disk writes to avoid writing meta JSON on every single message.
  */
 function trackNewMessage(contactId) {
   const meta = loadMeta(contactId);
   if (!meta) return false;
 
-  meta.messagesSinceLastUpdate = (meta.messagesSinceLastUpdate || 0) + 1;
-  fs.writeFileSync(getMetaPath(contactId), JSON.stringify(meta, null, 2));
+  const pending = (_pendingCounts.get(contactId) || 0) + 1;
+  _pendingCounts.set(contactId, pending);
 
-  return meta.messagesSinceLastUpdate >= UPDATE_THRESHOLD;
+  // Only flush to disk every BATCH_FLUSH_EVERY messages or at threshold
+  const total = (meta.messagesSinceLastUpdate || 0) + pending;
+  if (pending >= BATCH_FLUSH_EVERY || total >= UPDATE_THRESHOLD) {
+    meta.messagesSinceLastUpdate = total;
+    fs.writeFileSync(getMetaPath(contactId), JSON.stringify(meta, null, 2));
+    _pendingCounts.set(contactId, 0);
+  }
+
+  return total >= UPDATE_THRESHOLD;
 }
 
 /**

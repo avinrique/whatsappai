@@ -17,9 +17,10 @@ function getOpenAIClient() {
   return openaiClient;
 }
 
-async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
+async function callOpenAI(systemPrompt, messages, maxTokens = 300, options = {}) {
   const client = getOpenAIClient();
   const model = config.get('openaiModel') || 'gpt-4o';
+  const temperature = options.temperature ?? 0.5;
 
   const formatted = [
     { role: 'system', content: systemPrompt },
@@ -28,13 +29,13 @@ async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
 
   const inputChars = formatted.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
   const startTime = Date.now();
-  console.log(`  \x1b[90m[LLM] OpenAI/${model} | ${inputChars} chars in | max ${maxTokens} tokens out...\x1b[0m`);
+  console.log(`  \x1b[90m[LLM] OpenAI/${model} | ${inputChars} chars in | max ${maxTokens} tokens out | temp ${temperature}...\x1b[0m`);
 
   const response = await client.chat.completions.create({
     model,
     messages: formatted,
     max_tokens: maxTokens,
-    temperature: 0.5,
+    temperature,
   });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -44,9 +45,10 @@ async function callOpenAI(systemPrompt, messages, maxTokens = 300) {
   return output;
 }
 
-async function callOllama(systemPrompt, messages, maxTokens = 300) {
+async function callOllama(systemPrompt, messages, maxTokens = 300, options = {}) {
   const host = (config.get('ollamaHost') || 'http://localhost:11434').replace('localhost', '127.0.0.1');
   const model = config.get('ollamaModel') || 'llama3';
+  const temperature = options.temperature ?? 0.5;
 
   const formatted = [
     { role: 'system', content: systemPrompt },
@@ -56,7 +58,7 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
   // Calculate input size for logging
   const inputChars = formatted.reduce((sum, m) => sum + m.content.length, 0);
   const startTime = Date.now();
-  console.log(`  \x1b[90m[LLM] Ollama/${model} | ${inputChars} chars in | max ${maxTokens} tokens out...\x1b[0m`);
+  console.log(`  \x1b[90m[LLM] Ollama/${model} | ${inputChars} chars in | max ${maxTokens} tokens out | temp ${temperature}...\x1b[0m`);
 
   // Timeout: 20 minutes for all Ollama calls
   const timeoutMs = 1200000;
@@ -72,7 +74,7 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
         model,
         messages: formatted,
         stream: false,
-        options: { num_predict: maxTokens, temperature: 0.5 },
+        options: { num_predict: maxTokens, temperature },
       }),
       signal: controller.signal,
     });
@@ -102,28 +104,40 @@ async function callOllama(systemPrompt, messages, maxTokens = 300) {
   return content;
 }
 
-async function callLLM(systemPrompt, messages, maxTokens = 300) {
+async function callLLM(systemPrompt, messages, maxTokens = 300, options = {}) {
   const provider = config.get('llmProvider') || 'openai';
+  const maxRetries = options.retries ?? 1;
 
-  if (provider === 'ollama') {
-    return callOllama(systemPrompt, messages, maxTokens);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (provider === 'ollama') {
+        return await callOllama(systemPrompt, messages, maxTokens, options);
+      }
+      if (!getOpenAIApiKey()) {
+        console.log('No OPENAI_API_KEY set, falling back to Ollama...');
+        return await callOllama(systemPrompt, messages, maxTokens, options);
+      }
+      return await callOpenAI(systemPrompt, messages, maxTokens, options);
+    } catch (err) {
+      const isRetryable = err.status === 429 || err.status >= 500 || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT';
+      if (attempt < maxRetries && isRetryable) {
+        const delay = (attempt + 1) * 2000;
+        console.log(`  \x1b[33m[LLM] Retrying in ${delay / 1000}s (${err.message})...\x1b[0m`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
   }
-
-  // Default to OpenAI
-  if (!getOpenAIApiKey()) {
-    console.log('No OPENAI_API_KEY set, falling back to Ollama...');
-    return callOllama(systemPrompt, messages, maxTokens);
-  }
-
-  return callOpenAI(systemPrompt, messages, maxTokens);
 }
 
 /**
  * Call OpenAI with vision support (image_url content blocks).
  */
-async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
+async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000, options = {}) {
   const client = getOpenAIClient();
   const model = config.get('openaiModel') || 'gpt-4o';
+  const temperature = options.temperature ?? 0.5;
 
   const userContent = [];
   const lastUser = messages.find(m => m.role === 'user');
@@ -151,7 +165,7 @@ async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], m
     model,
     messages: formatted,
     max_tokens: maxTokens,
-    temperature: 0.5,
+    temperature,
   });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -165,9 +179,10 @@ async function callOpenAIWithVision(systemPrompt, messages, base64Images = [], m
  * Call Ollama with vision support (base64 images in message content).
  * Works with multimodal models like gemma3, llava, etc.
  */
-async function callOllamaWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
+async function callOllamaWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000, options = {}) {
   const host = (config.get('ollamaHost') || 'http://localhost:11434').replace('localhost', '127.0.0.1');
   const model = config.get('ollamaModel') || 'llama3';
+  const temperature = options.temperature ?? 0.5;
 
   // Ollama expects images as raw base64 strings (no data: prefix) in the "images" array
   const images = base64Images.map(img => {
@@ -204,7 +219,7 @@ async function callOllamaWithVision(systemPrompt, messages, base64Images = [], m
         model,
         messages: formatted,
         stream: false,
-        options: { num_predict: maxTokens, temperature: 0.5 },
+        options: { num_predict: maxTokens, temperature },
       }),
       signal: controller.signal,
     });
@@ -238,19 +253,19 @@ async function callOllamaWithVision(systemPrompt, messages, base64Images = [], m
  * Route vision calls to the right provider.
  * Falls back: OpenAI → Ollama if no API key.
  */
-async function callLLMWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000) {
+async function callLLMWithVision(systemPrompt, messages, base64Images = [], maxTokens = 1000, options = {}) {
   const provider = config.get('llmProvider') || 'openai';
 
   if (provider === 'ollama') {
-    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens);
+    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens, options);
   }
 
   if (!getOpenAIApiKey()) {
     console.log('No OPENAI_API_KEY set, falling back to Ollama vision...');
-    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens);
+    return callOllamaWithVision(systemPrompt, messages, base64Images, maxTokens, options);
   }
 
-  return callOpenAIWithVision(systemPrompt, messages, base64Images, maxTokens);
+  return callOpenAIWithVision(systemPrompt, messages, base64Images, maxTokens, options);
 }
 
 module.exports = { callLLM, callLLMWithVision, callOpenAI, callOllama, callOpenAIWithVision, callOllamaWithVision };

@@ -174,8 +174,11 @@ function getWordCountStats(conversationFlow, userName) {
     }
   }
 
-  // Use real messages if we have enough; otherwise fall back to all
-  const lengths = realLengths.length >= 3 ? realLengths : allLengths;
+  // Use real messages if we have enough; middle tier: all except 1-word filler; last resort: all
+  const nonFillerLengths = allLengths.filter(wc => wc > 1);
+  const lengths = realLengths.length >= 3 ? realLengths
+    : nonFillerLengths.length >= 3 ? nonFillerLengths
+    : allLengths;
   if (lengths.length === 0) return defaults;
 
   lengths.sort((a, b) => a - b);
@@ -190,34 +193,103 @@ function getWordCountStats(conversationFlow, userName) {
   return { min, avg, max, p75, upper };
 }
 
+/**
+ * Trim conversation flow to last N lines for steps that only need recent context.
+ */
+function trimConversation(conversationFlow, maxLines = 20) {
+  if (!conversationFlow) return conversationFlow;
+  const lines = conversationFlow.split('\n');
+  if (lines.length <= maxLines) return conversationFlow;
+  return '... [earlier messages omitted] ...\n' + lines.slice(-maxLines).join('\n');
+}
+
+/**
+ * Extract named sections from a style doc by splitting on ## headers.
+ * More reliable than char-slicing or fragile regex.
+ */
+function extractStyleSections(doc, sectionNames) {
+  if (!doc) return '';
+  const parts = doc.split(/(?=^## )/m);
+  const matched = [];
+  for (const part of parts) {
+    for (const name of sectionNames) {
+      if (part.toLowerCase().startsWith(`## ${name.toLowerCase()}`)) {
+        matched.push(part.trim());
+      }
+    }
+  }
+  return matched.length > 0 ? matched.join('\n\n') : doc.slice(0, 2500);
+}
+
 // ─── Emergency Detection ───
-// Common emergency words across widely-spoken languages.
-// This is a best-effort keyword check — covers English, Hindi, Spanish, etc.
+// Substring-match keywords (checked via .includes)
 const EMERGENCY_KEYWORDS = [
   // English
-  'dying', 'die', 'dead', 'death', 'killed',
+  'dying', 'dead', 'death', 'killed',
   'accident', 'crash', 'hospital', 'emergency',
   'help me', 'save me', 'killing', 'suicide',
   'blood', 'ambulance', 'police',
   'hurt', 'injured', 'attack', 'danger',
   'serious problem', 'critical', 'urgent',
-  // Hindi / Urdu
-  'marna', 'mar gaya', 'mar raha', 'bachao', 'maddat', 'khatarnak',
+  'overdose', 'seizure', 'unconscious', 'collapsed',
+  // Hindi / Urdu (expanded)
+  'marna', 'mar gaya', 'mar raha', 'mar rahi', 'mujhe bachao',
+  'bachao', 'maddat', 'khatarnak', 'jaan ka khatra', 'zakhmi',
+  'behosh', 'hospital le jao', 'ambulance bulao',
+  // Nepali
+  'maryo', 'mardai', 'bachau', 'sahayata', 'ghaite',
   // Spanish
-  'muriendo', 'accidente', 'emergencia', 'ayuda', 'hospital', 'peligro',
+  'muriendo', 'accidente', 'emergencia', 'ayuda', 'peligro',
   // Portuguese
   'morrendo', 'acidente', 'socorro',
-  // Common abbreviations
-  'sos', '911', '112',
+  'sos',
 ];
+
+// These need word-boundary matching to avoid false positives in addresses/numbers
+const EMERGENCY_STANDALONE = ['die', '911', '112', '100', '108'];
+
+// Negation prefixes that cancel out emergency keywords
+const NEGATION_PREFIXES = [
+  'not ', 'no ', "n't ", 'dont ', "don't ", 'wont ', "won't ", 'isnt ', "isn't ",
+  'nahi ', 'nhi ', 'mat ', 'na ', 'never ',
+];
+
+// Context patterns that indicate 911/112 is NOT an emergency (addresses, etc.)
+const NUMBER_CONTEXT_REGEX = /(?:apt|apartment|room|unit|suite|#|no\.?|flat|block)\s*\d/i;
 
 /**
  * Detect if a message contains emergency/crisis content.
+ * Handles negation ("I'm NOT dying") and address false positives ("apartment 911").
  */
 function detectEmergency(message) {
   if (!message) return false;
   const lower = message.toLowerCase();
-  return EMERGENCY_KEYWORDS.some(kw => lower.includes(kw));
+
+  // Check standalone patterns with word boundaries
+  for (const kw of EMERGENCY_STANDALONE) {
+    const regex = new RegExp(`\\b${kw}\\b`);
+    if (regex.test(lower)) {
+      // For numbers, check they're not in an address context
+      if (/^\d+$/.test(kw) && NUMBER_CONTEXT_REGEX.test(lower)) continue;
+      // Check negation
+      const idx = lower.indexOf(kw);
+      const prefix = lower.slice(Math.max(0, idx - 20), idx);
+      if (NEGATION_PREFIXES.some(neg => prefix.includes(neg))) continue;
+      return true;
+    }
+  }
+
+  // Check substring keywords
+  for (const kw of EMERGENCY_KEYWORDS) {
+    const idx = lower.indexOf(kw);
+    if (idx === -1) continue;
+    // Check for negation within 20 chars before the keyword
+    const prefix = lower.slice(Math.max(0, idx - 20), idx);
+    if (NEGATION_PREFIXES.some(neg => prefix.includes(neg))) continue;
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -229,7 +301,7 @@ async function think(userName, contactName, conversationFlow, incomingMessage, i
   let userPrompt = '';
 
   if (relationshipDoc) {
-    userPrompt += `WHO THEY ARE TO EACH OTHER:\n${relationshipDoc.slice(0, 2000)}\n\n`;
+    userPrompt += `WHO THEY ARE TO EACH OTHER:\n${extractStyleSections(relationshipDoc, ['Language & Word Choices', 'Relationship Context', 'Conversation Dynamics'])}\n\n`;
   }
 
   if (qaContext) {
@@ -237,7 +309,7 @@ async function think(userName, contactName, conversationFlow, incomingMessage, i
   }
 
   if (conversationFlow) {
-    userPrompt += `FULL CONVERSATION FLOW (read EVERY message carefully, in order):\n${conversationFlow}\n\n`;
+    userPrompt += `RECENT CONVERSATION (last ~20 messages):\n${trimConversation(conversationFlow, 20)}\n\n`;
   }
 
   userPrompt += `LATEST MESSAGE(S) from ${contactName}:\n"${incomingMessage}"\n\n`;
@@ -280,7 +352,7 @@ Analyze the DIALOGUE carefully — track who said what and what each message is 
 
 6. CONFIDENCE: HIGH/MEDIUM/LOW — can the AI write a good reply? If LOW, explain why.`;
 
-  return callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 500);
+  return callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 500, { temperature: 0.3 });
 }
 
 /**
@@ -312,7 +384,7 @@ The reply should feel natural for the situation — short for casual, longer whe
   }
 
   if (relationshipDoc) {
-    userPrompt += `${userName}'s STYLE DOCUMENT:\n${relationshipDoc.slice(0, 2500)}\n\n`;
+    userPrompt += `${userName}'s STYLE DOCUMENT:\n${extractStyleSections(relationshipDoc, ['Language & Word Choices', 'General Style', 'Response Patterns', 'Punctuation Habits'])}\n\n`;
   }
 
   if (qaContext) {
@@ -350,7 +422,7 @@ NOW DECIDE:
 5. TEMPLATE: Quote 1-2 of ${userName}'s REAL messages that this reply should look like
 6. AVOID: What must the reply NOT do? (avoid repeating the same filler if already used recently)`;
 
-  return callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 350);
+  return callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 350, { temperature: 0.3 });
 }
 
 /**
@@ -407,7 +479,7 @@ Match the length to the SITUATION. Casual = short. Needs a real answer = can be 
   userPrompt += `DECISION:\n${decideOutput}\n\n`;
   userPrompt += `Write ONLY the message text. ${s.avg}-${effectiveUpper} words depending on context. Be ${userName}.`;
 
-  const reply = await callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 100);
+  const reply = await callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 100, { temperature: 0.6 });
 
   // Clean up
   let cleaned = reply.replace(/^["']|["']$/g, '').trim();
@@ -427,28 +499,43 @@ Match the length to the SITUATION. Casual = short. Needs a real answer = can be 
  * Step 4 — Verify: Check if the reply is good enough to send.
  * Returns { pass, reason, suggestion }
  */
-async function verify(userName, contactName, reply, incomingMessage, conversationFlow, relationshipDoc, wordStats, isEmergency, recentReplies) {
+async function verify(userName, contactName, reply, incomingMessage, conversationFlow, relationshipDoc, wordStats, isEmergency, recentReplies, imageDescriptions) {
   const userExamples = extractUserExamples(conversationFlow, userName);
   const s = wordStats;
   const effectiveUpper = isEmergency ? 15 : s.upper;
   const replyWordCount = reply.split(/\s+/).length;
 
-  // Hard fail: exact duplicate of a recent reply
+  // Normalize common filler variants for near-duplicate detection
+  function normalizeFiller(text) {
+    let t = text.toLowerCase().trim();
+    // Normalize common filler equivalents
+    t = t.replace(/^(ha)+$/i, 'haha');
+    t = t.replace(/^lo+l$/i, 'lol');
+    t = t.replace(/^ok+(?:ay)?$/i, 'ok');
+    t = t.replace(/^ye+[sp]?h?$/i, 'yes');
+    t = t.replace(/^no+(?:pe)?$/i, 'no');
+    t = t.replace(/^hm+$/i, 'hmm');
+    t = t.replace(/^lma+o+$/i, 'lmao');
+    return t;
+  }
+
+  // Hard fail: exact or near-duplicate of a recent reply
   if (recentReplies && recentReplies.length > 0) {
     const replyLower = reply.toLowerCase().trim();
+    const replyNorm = normalizeFiller(reply);
     for (const prev of recentReplies) {
-      if (prev.toLowerCase().trim() === replyLower) {
+      if (prev.toLowerCase().trim() === replyLower || normalizeFiller(prev) === replyNorm) {
         return {
           pass: false,
-          reason: `DUPLICATE: "${reply}" was already sent recently. Must say something different.`,
-          suggestion: `Write a completely different reply that addresses "${incomingMessage}" — do NOT repeat "${reply}".`,
+          reason: `DUPLICATE: "${reply}" is too similar to recently sent "${prev}". Must say something different.`,
+          suggestion: `Write a completely different reply that addresses "${incomingMessage}" — do NOT repeat "${reply}" or similar filler.`,
         };
       }
     }
   }
 
-  // Hard fail: only if WAY beyond the upper bound (2x+ the effective limit)
-  if (replyWordCount > effectiveUpper * 2 && replyWordCount > 12) {
+  // Hard fail: only if WAY beyond the upper bound (adaptive threshold with small buffer)
+  if (replyWordCount > effectiveUpper * 1.8 + 3) {
     return {
       pass: false,
       reason: `Reply is ${replyWordCount} words — way beyond the ${effectiveUpper}-word upper limit for this context.`,
@@ -474,10 +561,12 @@ ${userName}'s REAL messages: ${userExamples || '(none available)'}`;
   userPrompt += `${contactName} JUST SENT: "${incomingMessage}"
 AI'S REPLY AS ${userName}: "${reply}"\n\n`;
 
+  if (imageDescriptions && imageDescriptions.length > 0) {
+    userPrompt += `IMAGE CONTEXT: ${contactName} sent image(s):\n${imageDescriptions.map((d, i) => `Image ${i + 1}: ${d}`).join('\n')}\nVerify the reply addresses/acknowledges the image content correctly.\n\n`;
+  }
+
   if (relationshipDoc) {
-    const langSection = relationshipDoc.match(/## Language & Word Choices[\s\S]*?(?=\n## [A-Z])/i)?.[0] || '';
-    const styleSection = relationshipDoc.match(/## General Style[\s\S]*?(?=\n## [A-Z])/i)?.[0] || '';
-    userPrompt += `STYLE REFERENCE:\n${langSection}\n${styleSection}\n\n`;
+    userPrompt += `STYLE REFERENCE:\n${extractStyleSections(relationshipDoc, ['Language & Word Choices', 'General Style', 'Punctuation Habits'])}\n\n`;
   }
 
   userPrompt += `CHECK — FAIL only if the reply is genuinely bad:
@@ -498,12 +587,14 @@ AI'S REPLY AS ${userName}: "${reply}"\n\n`;
 
 8. PUNCTUATION: Does the reply match ${userName}'s punctuation habits? If ${userName} rarely uses periods/commas and the reply has proper punctuation — FAIL.
 
+9. IMAGE FIT: If ${contactName} sent image(s), does the reply react to what's actually in the image? Misidentifying image content or ignoring the image entirely = FAIL.
+
 VERDICT (output EXACTLY this format):
 PASS or FAIL
 REASON: one sentence
 SUGGESTION: if FAIL, write the correct reply (1-${effectiveUpper} words, in ${userName}'s style, actually addressing what was said). If PASS, write "none"`;
 
-  const result = await callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 250);
+  const result = await callLLM(systemPrompt, [{ role: 'user', content: userPrompt }], 250, { temperature: 0.2 });
 
   const pass = /^PASS/i.test(result.trim());
   const reasonMatch = result.match(/REASON:\s*(.+)/i);
@@ -519,7 +610,7 @@ SUGGESTION: if FAIL, write the correct reply (1-${effectiveUpper} words, in ${us
 /**
  * Rewrite a failed reply using verifier feedback.
  */
-async function rewrite(userName, contactName, failedReply, verifyReason, verifySuggestion, decideOutput, relationshipDoc, conversationFlow, incomingMessage, wordStats, isEmergency) {
+async function rewrite(userName, contactName, failedReply, verifyReason, verifySuggestion, decideOutput, relationshipDoc, conversationFlow, incomingMessage, wordStats, isEmergency, recentReplies) {
   const userExamples = extractUserExamples(conversationFlow, userName);
   const s = wordStats;
   const effectiveUpper = isEmergency ? 15 : s.upper;
@@ -540,6 +631,10 @@ Acceptable range: ${s.avg}-${effectiveUpper} words depending on situation.`;
   let userPrompt = '';
   if (conversationFlow) {
     userPrompt += `CONVERSATION:\n${conversationFlow}\n\n`;
+  }
+
+  if (recentReplies && recentReplies.length > 0) {
+    userPrompt += `🚫 DO NOT REPEAT — ${userName}'s last replies were:\n${recentReplies.map(r => `- "${r}"`).join('\n')}\nThe new reply MUST be different from ALL of these AND different from the failed reply.\n\n`;
   }
 
   userPrompt += `${contactName} said: "${incomingMessage}"
@@ -601,7 +696,7 @@ async function describeImages(base64Images) {
       500
     );
     if (base64Images.length === 1) return [result];
-    const descriptions = result.split(/\n(?=\d+[.):])/).filter(Boolean);
+    const descriptions = result.split(/\n(?=(?:Image\s+)?\d+[.):]\s)/i).filter(Boolean);
     return descriptions.length > 0 ? descriptions : [result];
   } catch (err) {
     console.error(`[Chain] Image description failed: ${err.message}`);
@@ -671,7 +766,7 @@ async function thinkAndReply(contactId, contactName, incomingMessage, imageDescr
   if (recentMessages.length > 0) {
     conversationFlow = recentMessages.map(m => {
       const sender = m.fromMe ? userName : contactName;
-      const time = m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      const time = m.timestamp ? (() => { const d = new Date(m.timestamp * 1000); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; })() : '';
       // Tag auto-generated messages so the LLM knows not to blindly copy their style
       const isAutoGenerated = m.fromMe && m.id && (m.id.startsWith('auto_') || m.id.startsWith('web_'));
       const autoTag = isAutoGenerated ? ' [AI-GENERATED]' : '';
@@ -686,11 +781,11 @@ async function thinkAndReply(contactId, contactName, incomingMessage, imageDescr
   // re-analyze the image with the specific question for better detail
   let hasImages = imageDescriptions && imageDescriptions.length > 0;
   if (hasImages && base64Images.length > 0 && incomingMessage !== '[image]') {
-    const isImageQuestion = /who|what|which|guess|identify|name|character|kun|ko ho|kasle|k ho/i.test(incomingMessage);
+    const isImageQuestion = /who|what|which|where|when|how|why|is that|is this|tell me|describe|recognize|guess|identify|name|character|show|kun|ko ho|kasle|k ho|kaha|yo k|tyo k/i.test(incomingMessage);
     if (isImageQuestion) {
       console.log(`  ${C.cyan}[Chain] Re-analyzing image with question: "${incomingMessage}"${C.reset}`);
       try {
-        const reAnalysis = await analyzeImageWithQuestion(base64Images, incomingMessage, imageDescriptions[0]);
+        const reAnalysis = await analyzeImageWithQuestion(base64Images, incomingMessage, imageDescriptions.join('\n'));
         imageDescriptions = [reAnalysis];
         logger.logStep('Think', { extra: `📷 Re-analyzed image: ${reAnalysis.slice(0, 100)}` });
       } catch (err) {
@@ -735,7 +830,7 @@ async function thinkAndReply(contactId, contactName, incomingMessage, imageDescr
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const verdict = await verify(userName, contactName, reply, incomingMessage, conversationFlow, relationshipDoc, wordStats, isEmergency, recentReplies);
+      const verdict = await verify(userName, contactName, reply, incomingMessage, conversationFlow, relationshipDoc, wordStats, isEmergency, recentReplies, imageDescriptions);
       lastVerdict = verdict;
 
       logger.logStep('Verify', {
@@ -752,7 +847,7 @@ async function thinkAndReply(contactId, contactName, incomingMessage, imageDescr
       if (attempt < MAX_RETRIES) {
         reply = await rewrite(
           userName, contactName, reply, verdict.reason, verdict.suggestion,
-          decideOutput, relationshipDoc, conversationFlow, incomingMessage, wordStats, isEmergency
+          decideOutput, relationshipDoc, conversationFlow, incomingMessage, wordStats, isEmergency, recentReplies
         );
         logger.logStep('Rewrite', {
           output: reply,
@@ -767,11 +862,23 @@ async function thinkAndReply(contactId, contactName, incomingMessage, imageDescr
     }
   }
 
-  // ALL retries failed — use the verifier's last suggestion if available
+  // ALL retries failed — use the verifier's last suggestion if available, but sanity-check it first
+  const effectiveUpper = isEmergency ? 15 : wordStats.upper;
   if (lastVerdict && lastVerdict.suggestion && lastVerdict.suggestion !== 'none' && lastVerdict.suggestion.length > 0 && lastVerdict.suggestion.length < 100) {
     let suggestion = lastVerdict.suggestion.replace(/^["']|["']$/g, '').trim();
-    logger.logFinal('SENT_SUGGESTION', suggestion);
-    return suggestion;
+
+    // Check suggestion isn't a duplicate of recent replies
+    const isDuplicate = recentReplies && recentReplies.some(r => r.toLowerCase().trim() === suggestion.toLowerCase().trim());
+    // Check suggestion isn't way too long
+    const suggestionWords = suggestion.split(/\s+/).length;
+    const isTooLong = suggestionWords > effectiveUpper * 2;
+
+    if (!isDuplicate && !isTooLong && suggestion.length > 0) {
+      logger.logFinal('SENT_SUGGESTION', suggestion);
+      return suggestion;
+    }
+
+    logger.logStep('Verify', { status: 'fail', extra: `Suggestion "${suggestion}" failed sanity check: ${isDuplicate ? 'duplicate' : 'too long'}` });
   }
 
   // No good suggestion either — return null, caller should NOT send

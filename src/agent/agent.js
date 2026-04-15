@@ -93,7 +93,7 @@ INSTRUCTION MODE:
   return prompt;
 }
 
-async function generateReply(contactId, contactName, incomingMessage) {
+async function generateReply(contactId, contactName, incomingMessage, imageDescriptions = []) {
   const { userName, relationshipDoc, conversationFlow } = await buildContext(contactId, contactName);
 
   const systemPrompt = buildSystemPrompt(userName, contactName, relationshipDoc, 'reply');
@@ -101,6 +101,11 @@ async function generateReply(contactId, contactName, incomingMessage) {
   let userPrompt = '';
   if (conversationFlow) {
     userPrompt += `CONVERSATION FLOW (this is what happened recently — read it ALL):\n${conversationFlow}\n\n`;
+  }
+
+  // Add image context if available
+  if (imageDescriptions.length > 0) {
+    userPrompt += `IMAGE CONTEXT: ${contactName} sent image(s):\n${imageDescriptions.map((d, i) => `Image ${i + 1}: ${d}`).join('\n')}\nReact to the image content naturally.\n\n`;
   }
 
   // If multiple messages came in (debounced), show them clearly

@@ -10,7 +10,7 @@ function sleep(ms) {
 }
 
 function randomDelay(minMs, maxMs) {
-  return Math.floor(Math.random() * (maxMs - minMs)) + minMs;
+  return Math.max(0, Math.floor(Math.random() * (maxMs - minMs)) + minMs);
 }
 
 /**
@@ -39,7 +39,7 @@ function getSmartDelay(contactId) {
     const doc = styleProfiler.loadDocument(contactId);
     if (doc) {
       // Try to extract timing from the document
-      const avgMatch = doc.match(/Average reply time:\s*(\d+)(s|m|h)/);
+      const avgMatch = doc.match(/(?:average|avg|typical)\s*(?:reply\s*)?time[:\s]*(\d+)\s*(s|sec|m|min|h|hr)/i);
       if (avgMatch) {
         const val = parseInt(avgMatch[1]);
         const unit = avgMatch[2];
@@ -75,24 +75,30 @@ async function getImageDescriptions(messages, chat) {
 
   if (imageMessages.length === 0) return { descriptions: [], base64Images: [] };
 
-  // Select which images to process
+  // Select which images to process (Fisher-Yates shuffle for unbiased selection)
   let toProcess = imageMessages;
   if (imageMessages.length >= 10) {
-    const shuffled = [...imageMessages].sort(() => Math.random() - 0.5);
+    const shuffled = [...imageMessages];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
     toProcess = shuffled.slice(0, 5);
   }
 
-  const base64Images = [];
-  for (const imgMsg of toProcess) {
-    try {
+  // Download images in parallel
+  const downloadResults = await Promise.allSettled(
+    toProcess.map(async (imgMsg) => {
       const media = await imgMsg.downloadMedia();
       if (media && media.data) {
-        base64Images.push(`data:${media.mimetype};base64,${media.data}`);
+        return `data:${media.mimetype};base64,${media.data}`;
       }
-    } catch (err) {
-      console.error(`  [Auto-reply] Failed to download image: ${err.message}`);
-    }
-  }
+      return null;
+    })
+  );
+  const base64Images = downloadResults
+    .filter(r => r.status === 'fulfilled' && r.value)
+    .map(r => r.value);
 
   if (base64Images.length === 0) return { descriptions: [], base64Images: [] };
 
@@ -151,8 +157,13 @@ async function handleIncomingMessage(msg, client) {
   const pending = pendingReplies.get(contactId);
   if (pending) {
     clearTimeout(pending.timeout);
-    pending.messages.push(msg.body || '[image]');
-    pending.rawMessages.push(msg);
+    // Dedup: skip if same message ID already buffered (WhatsApp delivery retries)
+    const msgId = msg.id?._serialized || `${msg.from}_${msg.timestamp}`;
+    const alreadyBuffered = pending.rawMessages.some(m => (m.id?._serialized || '') === msgId);
+    if (!alreadyBuffered) {
+      pending.messages.push(msg.body || '[image]');
+      pending.rawMessages.push(msg);
+    }
   } else {
     pendingReplies.set(contactId, {
       messages: [msg.body || '[image]'],
@@ -244,7 +255,7 @@ async function sendDebouncedReply(contactId, entry) {
     reply = await chain.thinkAndReply(contactId, contactName, combinedMessage, imageDescriptions, base64Images);
   } catch (err) {
     console.error(`  [Chain] Failed, falling back to basic reply: ${err.message}`);
-    reply = await agent.generateReply(contactId, contactName, combinedMessage);
+    reply = await agent.generateReply(contactId, contactName, combinedMessage, imageDescriptions);
   }
 
   // If chain returned null, verifier rejected ALL attempts — do NOT send
